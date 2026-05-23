@@ -503,6 +503,9 @@ class MemoryHooksMixin:
             tool_name in tools_called
             for tool_name in ("record_memory", "record_feel", "record_diary")
         ):
+            logger.debug(
+                "[memory] auto-record skipped: tools already called %s", tools_called
+            )
             return
 
         # Need a non-empty user message and assistant reply.
@@ -514,6 +517,11 @@ class MemoryHooksMixin:
         user_msg = str(user_msg or "").strip()
         assistant_msg = (response.completion_text or "").strip()
         if not user_msg or not assistant_msg:
+            logger.debug(
+                "[memory] auto-record skipped: empty user_msg=%s or assistant_msg=%s",
+                bool(user_msg),
+                bool(assistant_msg),
+            )
             return
 
         try:
