@@ -247,6 +247,9 @@
     "archived": 8
   },
   "total": 30,
+  "today_new": 2,
+  "week_new": 9,
+  "max_activation": 4.3,
   "decay_engine": "运行中",
   "embedding": "已启用"
 }
@@ -257,6 +260,9 @@
 | `sessions` | 不同 session_id 的数量 |
 | `counts` | 按 bucket_type 分类的桶数量 |
 | `total` | 所有桶总数 |
+| `today_new` | 今日新增桶数 |
+| `week_new` | 近 7 天新增桶数 |
+| `max_activation` | 当前全局最高 activation_count |
 | `decay_engine` | `"运行中"` / `"已停止"` |
 | `embedding` | `"已启用"` / `"未启用"` |
 

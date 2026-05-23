@@ -105,7 +105,7 @@
 启动 AstrBot 后，浏览器打开 `http://<dashboard_host>:<dashboard_port>/`（例如 `http://127.0.0.1:2140/`）即可进入。`/dashboard` 也指向同一个页面。
 
 - **首次访问**会要求设置一个登录密码（最少 4 位）。也可以通过环境变量 `MEMORY_DASHBOARD_PASSWORD=your_password` 强制覆盖（此时 UI 不再允许改密码）。
-- **能做什么**：浏览所有 session 下的记忆桶、按 session/类型/关键词过滤、查看详情、编辑（name/content/记忆日期/tags/domain/valence/arousal/importance/pinned/resolved/digested）、删除、全文搜索、看运行状态；脉搏页已提供导出配置、导出记忆、导入配置、合并/替换导入记忆、补建缺失向量、备份列表与删除备份等入口。
+- **能做什么**：浏览所有 session 下的记忆桶、按 session/类型/关键词过滤、查看详情、编辑（name/content/记忆日期/tags/domain/valence/arousal/importance/pinned/resolved/digested）、删除、全文搜索、看运行状态；脉搏页会展示本日新增、近 7 天新增、最高回想次数、领域分布、情感分布，并提供导出配置、导出记忆、导入配置、合并/替换导入记忆、补建缺失向量、备份列表与删除备份等入口。
 - **前端交互**：当前仪表盘前端已经统一朝 Ombre Brain / Uluru Star 风格靠拢：普通提示逐步切到胶囊提示，`hold` 页的“分析并预览 → 确认保存”链路已使用胶囊风格提示，`grow` 页的“拆分预览 → 确认保存”交互也正在对齐同一套体验（提示、按钮位置、保存反馈保持一致）。
 - **兼容状态**：当前插件版已接入 Ombre Brain 风格前端，并补齐该前端依赖的主要兼容 API；最近还修掉了超久远记忆导致的排序溢出、列表时间误显示为 1970、编辑日期不生效、点击“编辑”时卡片重复播放入场动画等问题，前端提示系统也在从旧 toast / modal 迁移到统一的胶囊体系。
 - **不会做什么**：不接管 AstrBot 自身的认证体系，仅做记忆的 CRUD；不允许直接编辑 vector / session_id 等结构性字段。

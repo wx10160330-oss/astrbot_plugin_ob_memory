@@ -635,10 +635,25 @@ class DashboardServer:
 
             sessions = await self.plugin.manager.list_sessions()
             total_counts: dict[str, int] = {}
+            now_ts = time.time()
+            today_start = datetime.fromtimestamp(now_ts).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).timestamp()
+            week_start = now_ts - 7 * 86400
+            today_new = 0
+            week_new = 0
+            max_activation = 0.0
             for sid in sessions:
                 counts = await self.plugin.manager.count_in_session(sid)
                 for k, v in counts.items():
                     total_counts[k] = total_counts.get(k, 0) + v
+                buckets = await self.plugin.manager.list_by_session(sid, include_archived=True)
+                for bucket in buckets:
+                    if bucket.created_at >= today_start:
+                        today_new += 1
+                    if bucket.created_at >= week_start:
+                        week_new += 1
+                    max_activation = max(max_activation, float(bucket.activation_count or 0.0))
 
             decay_status = "未运行"
             if self.plugin.decay is not None:
@@ -653,6 +668,9 @@ class DashboardServer:
                     "sessions": len(sessions),
                     "counts": total_counts,
                     "total": sum(total_counts.values()),
+                    "today_new": today_new,
+                    "week_new": week_new,
+                    "max_activation": round(max_activation, 1),
                     "decay_engine": decay_status,
                     "embedding": embedding_status,
                 }

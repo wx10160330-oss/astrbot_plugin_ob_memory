@@ -193,6 +193,29 @@
 - recall 页点击“编辑”时，卡片不会再像刷新列表一样重新向上弹一次
 - 视觉效果会更接近“原位展开编辑面板”，减少打断感
 
+### 已完成 8：设置/脉搏页统计卡片改为以后端统计为准
+已修改文件：
+- `dashboard/server.py`
+- `dashboard/static/index.html`
+- `dashboard/static/ombre_frontend_extracted.html`
+- `API.md`
+- `README.md`
+- `PROMPTS_GUIDE.md`
+
+本窗口实际改动：
+- `/api/stats` 已补齐前端统计卡片需要的字段：
+  - `today_new`
+  - `week_new`
+  - `max_activation`
+- 前端 `loadMemories()` 会同步拉取 `/api/stats`，设置/脉搏页优先使用后端统计值。
+- 当前前端兜底仍保留本地计算，但 `max_activation` 兜底已改为 `Number(...)`，避免字符串拼接或异常类型导致显示超大数字。
+- 已清理本次改动中出现的无用 helper / 无用导入。
+- `tests/test_dashboard_smoke.py` 定向验证通过：`18 passed`。
+
+当前意义：
+- 本日新增、本周新增不再依赖前端列表局部数据。
+- 最高回想以全局后端聚合为准，不再受前端字段类型影响。
+
 ### 当前未完成：Ombre 前端主体已能用，但仍缺完整 UI 全流程人工验证
 已修改文件：
 - `dashboard/static/index.html`

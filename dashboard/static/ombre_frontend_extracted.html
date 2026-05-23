@@ -953,7 +953,7 @@
     <div id="toastContainer"></div>
     <div id="modalContainer"></div>
     <script>
-                var memories=[],currentPage='recall',editingId=null,filterStatus='all',sortBy='newest',searchQuery='',showFilters=false,filterDomain='',filterTimeRange='',filterImportance=0,batchMode=false,selectedIds=new Set(),editDomains={
+                var memories=[],stats=null,currentPage='recall',editingId=null,filterStatus='all',sortBy='newest',searchQuery='',showFilters=false,filterDomain='',filterTimeRange='',filterImportance=0,batchMode=false,selectedIds=new Set(),editDomains={
         },recordDomains=[],recordPinned=false,growEntries=null,growDomains={
         },recallPage=1,_skipScroll=false,_opLock=false,_doScrollTop=false;
         var PAGE_SIZE=6;
@@ -1219,7 +1219,7 @@
             }
           }catch(e){}
         })();
-        async function loadMemories(){try{var res=await fetch('/api/memories');memories=await res.json()}catch(e){memories=[];showToast('加载失败','err')}renderCurrentPage()}
+        async function loadMemories(){try{var res=await fetch('/api/memories');memories=await res.json();try{var statsRes=await fetch('/api/stats');stats=await statsRes.json()}catch(e){stats=null}}catch(e){memories=[];stats=null;showToast('加载失败','err')}renderCurrentPage()}
                 var _pageScrollY={};
         function switchPage(p){
           _pageScrollY[currentPage]=window.scrollY;
@@ -2198,14 +2198,14 @@
           var html='<div class="section-hdr"><h2>🔮 系统脉搏</h2><p>记忆系统运行概览</p></div>';
           var total=memories.length;
           var now=new Date(),todayStart=new Date(now.getFullYear(),now.getMonth(),now.getDate()),weekAgo=new Date(now-7*86400000);
-          var todayCount=memories.filter(function(m){
+          var todayCount=stats&&typeof stats.today_new==='number'?stats.today_new:memories.filter(function(m){
             return new Date(m.created)>=todayStart
           }).length;
-          var weekCount=memories.filter(function(m){
+          var weekCount=stats&&typeof stats.week_new==='number'?stats.week_new:memories.filter(function(m){
             return new Date(m.created)>=weekAgo
           }).length;
-          var maxAct=memories.reduce(function(mx,m){
-            return Math.max(mx,m.activation_count||0)
+          var maxAct=stats&&typeof stats.max_activation==='number'?stats.max_activation:memories.reduce(function(mx,m){
+            return Math.max(mx,Number(m.activation_count)||0)
           },0);
           html+='<div class="stat-grid" style="grid-template-columns:repeat(3,1fr)">' +
             '<div class="stat-card">' +

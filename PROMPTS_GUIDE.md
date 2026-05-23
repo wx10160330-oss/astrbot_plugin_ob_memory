@@ -93,7 +93,7 @@ MEMORY_BLOCK_FOOTER: str = "=== 记忆结束 ==="
 
 **用途**: 包裹注入到 `system_prompt` 中的记忆内容
 
-**何时注入**: 每次 LLM 请求前（`on_llm_request` 钩子）
+**何时注入**: 每次 LLM 请求前（`on_llm_request` 钩子）都会尝试匹配，但只有 Search / Surface / Random Drift 至少命中一条且未被 token budget 裁掉时，才会真正追加到 `system_prompt`。注入阶段本身只读数据库和 embedding，不额外调用 LLM。
 
 **注入格式示例**:
 ```
