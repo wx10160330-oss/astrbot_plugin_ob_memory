@@ -999,14 +999,22 @@
                     <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
                 </svg></div>
             <h1 style="color:var(--purple);font-size:19px;font-weight:700;letter-spacing:2px;margin-bottom:10px;text-shadow:0 0 8px rgba(139,120,230,0.8)">Ombre Brain</h1>
-            <p style="color:var(--text-dim);font-size:11px;letter-spacing:1px;margin-bottom:26px">小回的记忆</p>
+            <p id="loginSubtitle" style="color:var(--text-dim);font-size:11px;letter-spacing:1px;margin-bottom:26px">小回的记忆</p>
             <div id="pwWrap" style="position:relative"><input type="password" id="pwInput" class="input" placeholder="输入密码..." style="margin-bottom:4px;padding-right:36px"><button onclick="togglePwVisible()"
                     style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-dim);padding:2px;display:flex"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                         stroke-linecap="round" id="pwEyeIcon">
                         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
                         <circle cx="12" cy="12" r="3" />
                     </svg></button></div>
-            <p id="pwErr" style="color:var(--pink);font-size:11px;margin:6px 0;display:none">密码错误</p><button id="loginBtn" class="ghost-btn full" onclick="doLogin()" style="margin-top:10px">进入</button><button class="theme-btn" onclick="toggleTheme()"
+            <div id="pwConfirmWrap" style="position:relative;display:none;margin-top:8px"><input type="password" id="pwConfirmInput" class="input" placeholder="再次输入密码..." style="margin-bottom:4px;padding-right:36px"><button onclick="togglePwConfirmVisible()"
+                    style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-dim);padding:2px;display:flex"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" id="pwConfirmEyeIcon">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                    </svg></button></div>
+            <p id="pwErr" style="color:var(--pink);font-size:11px;margin:6px 0;display:none">密码错误</p>
+            <p id="pwHint" style="color:var(--text-dim);font-size:10px;margin:6px 0;display:none">密码至少 4 位</p>
+            <button id="loginBtn" class="ghost-btn full" onclick="doLogin()" style="margin-top:10px">进入</button><button class="theme-btn" onclick="toggleTheme()"
                 style="margin:18px auto 0;display:flex;align-items:center;gap:4px;color:var(--text-dim);font-size:10px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="5" />
                     <line x1="12" y1="1" x2="12" y2="3" />
@@ -1304,6 +1312,48 @@
           if(btn && btn.disabled) return;
           var pw=document.getElementById('pwInput').value;
           var pwErr=document.getElementById('pwErr');
+          var isSetupMode = document.getElementById('pwConfirmWrap').style.display !== 'none';
+          
+          // 首次设置密码模式
+          if(isSetupMode){
+            var pwConfirm=document.getElementById('pwConfirmInput').value;
+            if(pw.length < 4){
+              pwErr.textContent='密码至少需要 4 位';
+              pwErr.style.display='block';
+              return;
+            }
+            if(pw !== pwConfirm){
+              pwErr.textContent='两次输入的密码不一致';
+              pwErr.style.display='block';
+              return;
+            }
+            try{
+              var res=await fetch('/auth/setup',{
+                method:'POST',headers:{
+                  'Content-Type':'application/json'
+                },body:JSON.stringify({
+                  password:pw
+                })
+              });
+              var d={};
+              try{ d=await res.json(); }catch(e){}
+              if(res.ok && d.ok){
+                pwErr.style.display='none';
+                document.getElementById('loginPage').style.display='none';
+                document.getElementById('mainApp').style.display='block';
+                loadMemories().then(function(){window.scrollTo(0,0)});
+                showCapsuleToast('密码设置成功，欢迎来到小回的记忆世界 ✨');
+                return;
+              }
+              pwErr.textContent=d.error||'设置失败';
+              pwErr.style.display='block';
+            }catch(e){
+              showToast('连接失败','err')
+            }
+            return;
+          }
+          
+          // 正常登录模式
           try{
             var res=await fetch('/api/login',{
               method:'POST',headers:{
@@ -1343,11 +1393,19 @@
           }
         }
         document.getElementById('pwInput').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin()});
+        document.getElementById('pwConfirmInput').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin()});
                 function togglePwVisible(){
           var i=document.getElementById('pwInput');
           var h=i.type==='password';
           i.type=h?'text':'password';
           document.getElementById('pwEyeIcon').innerHTML=h?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>' +
+                  '<line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
+        }
+        function togglePwConfirmVisible(){
+          var i=document.getElementById('pwConfirmInput');
+          var h=i.type==='password';
+          i.type=h?'text':'password';
+          document.getElementById('pwConfirmEyeIcon').innerHTML=h?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>' +
                   '<line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
         }
         async function refreshData(){showCapsuleToast('刷新中...','loading',0);await loadMemories();showCapsuleToast('已刷新 ✨')}
@@ -1365,25 +1423,40 @@
           window.fetch=function(input,init){
             var url=typeof input==='string'?input:(input&&input.url)||'';
             return _origFetch.apply(this,arguments).then(function(res){
-              if(res.status===401 && url.indexOf('/api/login')<0){
+              // 跳过登录、设置密码和状态检查的 401 处理
+              if(res.status===401 && url.indexOf('/api/login')<0 && url.indexOf('/auth/setup')<0 && url.indexOf('/auth/status')<0){
                 try{ doLogoutApp(); }catch(e){}
               }
               return res;
             });
           };
         })();
-        // 页面加载时探测 session：已登录就直接进 mainApp
+        // 页面加载时探测 session：已登录就直接进 mainApp，未设置密码则显示设置界面
         (async function _initSession(){
           try{
-            var res=await fetch('/api/session_status');
+            var res=await fetch('/auth/status');
             if(!res.ok) return;
             var d=await res.json();
+            if(d.setup_needed){
+              // 首次访问，需要设置密码
+              document.getElementById('loginSubtitle').textContent='首次使用，请设置密码';
+              document.getElementById('pwInput').placeholder='设置密码（至少 4 位）';
+              document.getElementById('pwConfirmWrap').style.display='';
+              document.getElementById('pwHint').style.display='block';
+              document.getElementById('loginBtn').textContent='设置密码';
+              // 确保登录页面显示
+              document.getElementById('loginPage').style.display='flex';
+              document.getElementById('mainApp').style.display='none';
+              return;
+            }
             if(d.authenticated){
               document.getElementById('loginPage').style.display='none';
               document.getElementById('mainApp').style.display='block';
               loadMemories();
             }
-          }catch(e){}
+          }catch(e){
+            console.error('_initSession error:', e);
+          }
         })();
         async function loadMemories(){try{var res=await fetch('/api/memories');memories=await res.json()}catch(e){memories=[];showToast('加载失败','err')}renderCurrentPage()}
                 var _pageScrollY={};
