@@ -1,14 +1,414 @@
-# astrbot-plugin-helloworld
+# AstrBot Memory — 类人长期记忆插件
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+> 让 AI 伴侣的记忆像人一样：会衰减、会主动想起、能区分事件与感受、能识别"未完结的事"并在合适的时机重新浮现。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+---
 
-# Supports
+## 它在做什么
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+传统记忆插件的套路是「累积对话历史 → 周期性总结 → 检索时拿 top-K → 拼回 prompt」。这种做法解决了"信息能否被找回"，但解决不了 AI 伴侣最常见的痛点：**「说完一个话题就一直说这个话题」、「过去 resolved 的事还在反复浮现」、「重要的未完结的事却没有被惦记」**。
+
+本插件的核心思路是给记忆**生命周期**：
+
+- **会衰减**：基于改进版艾宾浩斯曲线，重要 / 高情感强度的记忆衰减更慢
+- **会归档**：长期低活跃的记忆自动 archive，不会无限堆积
+- **会沉底**：标记 `resolved=True` 的记忆权重 ×0.05，仍可被关键词唤醒但不会主动浮上来
+- **会浮现**：未完结的高 arousal 记忆获得 ×1.5 紧迫度加成，自然在 system_prompt 里出现
+- **会联想**：检索结果不足时，40% 概率漂浮一条「忽然想起」的旧低权重记忆，模拟人类随机联想
+- **能消化**：模型可以为某段事件写下自己的「感受 (feel)」，源记忆被标记为 digested 加速淡化，feel 本身永不衰减
+- **能整理**：长段倾诉（日记、回顾）可以一次性拆分为多条独立记忆
+- **能自省**：模型可以在新对话开头读最近记忆，用第一人称想想哪些事还有重量、哪些可以放下
+- **会想起**：每次 LLM 请求前，钩子自动按 Russell 情感坐标 + 时间近邻 + 重要度做四维加权检索 + 主动浮现，注入 system_prompt
+
+设计灵感来自 [Ombre Brain](https://github.com/P0luz/Ombre-Brain) 项目（一个给 Claude 用的 MCP 长期情绪记忆系统），但重写成纯 AstrBot 插件：用 SQLite + AstrBot Provider 体系替代 Markdown + MCP + 独立服务，零外部部署。
+
+---
+
+## 与 AstrBot 内置 / 其他记忆插件的边界
+
+| 角色 | 它在做什么 | 跟本插件冲突吗 |
+|---|---|---|
+| **AstrBot 内置 LongTermMemory** | 把当前群聊 / 会话最近 N 条消息塞进 system_prompt | 不冲突，关注的层不同（短期上下文 vs 跨对话情感记忆） |
+| **astrbot_plugin_livingmemory** | BM25 + Faiss 混合检索 + LLM 总结 + 图谱记忆 | 功能有重叠（都做"长期记忆"），建议二选一启用 |
+| **本插件** | Russell 情感坐标 + 衰减 + 主动浮现 + 事件/感受双层 | — |
+
+简单选型：
+- 想要 **大规模检索增强**（重视召回率、需要图谱）→ LivingMemory
+- 想要 **AI 伴侣式情感记忆**（重视"像人"的浮现行为、未完结惦记）→ 本插件
+- 两个同时开会让两份独立的记忆池互相打架，**不推荐共存**
+
+---
+
+## 快速上手
+
+1. **复制插件目录**到 `AstrBot/data/plugins/astrbot_plugin_ob_memory/`
+2. **安装额外依赖**（首次使用需要）：
+   ```bash
+   pip install -r data/plugins/astrbot_plugin_ob_memory/requirements.txt
+   ```
+   只装了 `rapidfuzz`（关键词检索）和 `starlette` / `uvicorn`（仪表盘）。
+3. **重启 AstrBot**——首次加载时插件会在 `data/plugin_data/astrbot_plugin_ob_memory/` 下创建 `memory.db`（SQLite）。
+4. **在 AstrBot Web 管理面板找到本插件的配置**，按需调整以下常用选项（默认面板里 6 项 + 仪表盘 2 项）：
+
+| 配置项 | 默认值 | 含义 |
+|---|---|---|
+| `scope_mode` | `conversation` | 隔离粒度：`conversation` 每个对话窗口独立 / `user` 同一用户跨窗口/平台共享 / `origin` 同一群/私聊全员共享 |
+| `embedding_provider_id` | （留空） | 用于向量检索的 Embedding 模型 ID。留空使用 AstrBot 默认；没配 embedding provider 时只走关键词检索 |
+| `tagging_enabled` | `true` | 写入时是否调 LLM 自动打标 + 智能合并相似桶。关闭可省每次写入 1 次 LLM 调用 |
+| `auto_record_enabled` | `true` | 模型没主动调 `record_memory` 时，插件是否启发式判断要不要把这一轮存下来 |
+| `auto_record_use_judge` | `true` | 自动记录是否再调一次 LLM 判定「这值得记吗」。关闭可省 1 次 LLM 调用 |
+| `dashboard_enabled` | `true` | 是否启用浏览器可视化管理面板 |
+| `dashboard_host` | `127.0.0.1` | 仪表盘监听地址：`127.0.0.1` 仅本机 / `0.0.0.0` 局域网可访问 |
+| `dashboard_port` | `2140` | 仪表盘端口 |
+
+5. **触发记忆**：直接和 AI 对话即可。模型支持 function calling 时，它会在合适时机自己调用 `record_memory` 工具；不支持时，`auto_record` 会兜底。
+
+---
+
+## 进阶配置（高级用户）
+
+普通用户用上面常用项就够了。要精调衰减曲线、检索权重、token 预算，**在 UI 配置里把 `advanced_mode` 开关打开**——12 个高级参数会立即出现在配置面板里（基于 AstrBot 的 `condition` 字段实现，无需任何额外文件）。
+
+### `advanced_mode = true` 后多出来的参数
+
+| 类别 | 参数 | 默认 | 说明 |
+|---|---|---|---|
+| 衰减引擎 | `decay_lambda` | 0.05 | 指数衰减速率（每天） |
+| 衰减引擎 | `decay_archive_threshold` | 0.3 | 低于此值的桶下次扫描时归档 |
+| 衰减引擎 | `decay_check_interval_hours` | 24 | 后台扫描间隔（0 = 禁用） |
+| 衰减引擎 | `decay_emotion_base` / `decay_arousal_boost` | 1.0 / 0.8 | 情感权重计算系数 |
+| 检索注入 | `max_search_results` | 3 | 关键词+向量召回的注入条数 |
+| 检索注入 | `max_surface_results` | 2 | 主动浮现的注入条数 |
+| 检索注入 | `injection_token_budget` | 1500 | system_prompt 里记忆块的 token 上限 |
+| 检索注入 | `merge_threshold` | 0.85 | 向量相似度高于此值合并到现有桶 |
+| 检索注入 | `random_drift_enabled` | true | 注入候选 < 3 条时 40% 概率漂浮一条「忽然想起」的旧低权重记忆，模拟人类联想 |
+| 自动记录 | `auto_record_min_chars` | 30 | 用户消息少于此长度跳过自动记录 |
+| 手动总结 | `summarize_default_rounds` | 0 | `/memory summarize` 不带参数时默认总结几轮（0 = 全部上下文） |
+| 提示词 | `digest_prompt` | （留空） | 自定义日记/总结/导入的 LLM 提示词。留空使用内置默认（AI 第一人称视角） |
+| 会话控制 | `disabled_sessions` | `[]` | session_id 在此列表则禁用注入与自动记录 |
+
+每项 hint 会直接显示在 UI 上，按需调整即可。**所有配置改动需重启插件生效。**
+
+### 自定义记忆提示词
+
+在高级配置中有一个 `digest_prompt` 文本框，可以自定义 `/memory summarize`、`/memory import_astrbot` 和 `record_diary` 工具使用的 LLM 提示词。
+
+默认提示词以 **AI 第一人称视角**记忆（"我"=AI，"你"=用户），例如产出的记忆会是：
+> 你告诉我你拿到了 offer，我能感受到你的激动
+
+如果你想改成其他视角或风格，直接在配置面板填入自定义提示词即可。留空则使用内置默认。修改后立即生效，无需重启。
+
+---
+
+## 仪表盘（Dashboard）
+
+启动 AstrBot 后，浏览器打开 `http://<dashboard_host>:<dashboard_port>/`（例如 `http://127.0.0.1:2140/`）即可进入。`/dashboard` 也指向同一个页面。
+
+- **首次访问**会要求设置一个登录密码（最少 4 位）。也可以通过环境变量 `MEMORY_DASHBOARD_PASSWORD=your_password` 强制覆盖（此时 UI 不再允许改密码）。
+- **能做什么**：浏览所有 session 下的记忆桶、按 session/类型/关键词过滤、查看详情、编辑（name/content/记忆日期/tags/domain/valence/arousal/importance/pinned/resolved/digested）、删除、全文搜索、看运行状态；脉搏页已提供导出配置、导出记忆、导入配置、合并/替换导入记忆、补建缺失向量、备份列表与删除备份等入口。
+- **前端交互**：当前仪表盘前端已经统一朝 Ombre Brain / Uluru Star 风格靠拢：普通提示逐步切到胶囊提示，`hold` 页的“分析并预览 → 确认保存”链路已使用胶囊风格提示，`grow` 页的“拆分预览 → 确认保存”交互也正在对齐同一套体验（提示、按钮位置、保存反馈保持一致）。
+- **兼容状态**：当前插件版已接入 Ombre Brain 风格前端，并补齐该前端依赖的主要兼容 API；最近还修掉了超久远记忆导致的排序溢出、列表时间误显示为 1970、编辑日期不生效、点击“编辑”时卡片重复播放入场动画等问题，前端提示系统也在从旧 toast / modal 迁移到统一的胶囊体系。
+- **不会做什么**：不接管 AstrBot 自身的认证体系，仅做记忆的 CRUD；不允许直接编辑 vector / session_id 等结构性字段。
+- **安全性**：默认监听 `127.0.0.1`，仅本机可访问。改成 `0.0.0.0` 暴露到局域网时**务必**设置密码，并自行评估防火墙规则。会话 cookie 是 httpOnly + SameSite=Lax，重启会失效（密码持久化在 `data/plugin_data/astrbot_plugin_ob_memory/dashboard_auth.json`，文件权限 600）。
+- **当前边界**：后端兼容层和主要前端入口已经到位，核心 CRUD、hold/grow、导入导出、备份、向量补建等路径都可用；但如果要对外宣称“前端完全定稿”，仍建议按真实 UI 流程把 grow 预览、批量操作确认、备份列表、导入替换确认等交互逐条手测一遍，确认它们都与新的胶囊式交互保持一致。
+
+---
+
+## 它到底怎么记的——架构速览
+
+```
+用户消息
+    │
+    ▼
+on_llm_request 钩子 ──┐
+    │                 │
+    │   ┌─────────────▼─────────────┐
+    │   │ SearchService             │  关键词 (rapidfuzz) + 向量 (cosine) 双通道检索
+    │   │ SurfaceStrategy           │  按 ActivationScore 主动浮现 pinned + 高权重未完结桶
+    │   │ Random Drift              │  结果 < 3 时 40% 几率漂一条「忽然想起」
+    │   └─────────────┬─────────────┘
+    │                 │ 拼成 [=== 长期记忆 ===] 块
+    │                 ▼
+    │             LLM Provider ←─── 模型看到记忆，可调用：
+    │                 │              record_memory / record_feel / record_diary
+    │                 │              recall_memory / reflect_memory / forget_memory
+    │                 ▼
+    │      回复 + 可能的工具调用
+    │                 │
+    └──── on_llm_response 钩子 ──┐
+                                  │
+              ┌───────────────────▼─────────────────────┐
+              │  模型已主动 record_memory？             │
+              │  ├─ 是 → 跳过                          │
+              │  └─ 否 → auto_record 启发式 + judge LLM │
+              └───────────────────┬─────────────────────┘
+                                  │
+                       MemoryWriter.hold()       MemoryWriter.hold_diary()
+                                  │              （模型显式调 record_diary 时）
+                ┌─────────────────┼─────────────────┐
+                ▼                 ▼                 ▼
+           Tagger.analyze   EmbeddingService    MemoryManager
+           (auto-tag)       (embed + 找合并候选) (写 SQLite)
+
+后台周期：DecayEngine 每 24h 跑一遍
+    └─ 长期未活跃 + 低重要度 → auto-resolve（沉底 ×0.05）
+    └─ ActivationScore < 0.3 → archive
+```
+
+### 核心模块（`core/`）
+
+| 文件 | 职责 |
+|---|---|
+| `models.py` | `MemoryBucket` dataclass + `clamp_bucket` 钳制工具 |
+| `memory_manager.py` | 纯 CRUD（带 session 隔离）+ touch + 时间涟漪 |
+| `decay_engine.py` | `calculate_score` 纯函数 + 后台衰减循环 + auto-resolve |
+| `embedding_service.py` | 向量生成（走 AstrBot Embedding Provider）+ BLOB 序列化 + cosine 搜索 |
+| `tagger.py` | LLM 调用封装：`analyze` / `merge_content` / `judge_worth_recording` / `digest` |
+| `dehydrator.py` | 记忆脱水压缩：注入前用 LLM 将长内容压缩为高密度摘要（带 LRU 缓存） |
+| `search_service.py` | 关键词+向量双通道检索 + 四维加权排序 |
+| `surface_strategy.py` | 主动浮现：pinned + 冷启动 + 衰减分排序 |
+| `memory_writer.py` | 高层写入流程：`hold`（单条）+ `hold_feel`（感受）+ `hold_diary`（拆分） |
+| `session_resolver.py` | 把 event 映射为 session_id（按 scope_mode） |
+| `prompts.py` | LLM 模板：ANALYZE / MERGE / JUDGE / DIGEST 四个 |
+
+### 接入层（`handlers/` + `dashboard/`）
+
+| 文件 | 职责 |
+|---|---|
+| `handlers/llm_hooks.py` | `@on_llm_request` 注入记忆（含脱水压缩）+ 随机漂流 + `@on_llm_response` 自动记录 |
+| `handlers/llm_tools.py` | 6 个 `@filter.llm_tool`：record_memory / record_feel / record_diary / recall_memory / reflect_memory / forget_memory |
+| `handlers/commands.py` | `/memory` 指令组：list / search / summarize / import_astrbot / pin / forget / delete / clear / stats / help |
+| `dashboard/server.py` | Starlette + uvicorn 嵌入式 HTTP 服务，提供 REST API + 单页前端 |
+| `dashboard/auth.py` | 密码哈希 (SHA-256 + salt) + 内存会话 token + 环境变量覆盖 |
+
+### 存储层（`storage/`）
+
+`memory.db` 单 SQLite 文件，两张表：
+- `memories`：主记忆桶
+- `embeddings`：向量（BLOB 存 packed float32）+ 外键级联删除
+
+升级时通过 `schema_version` 表做版本化迁移。
+
+---
+
+## 用户能用的指令
+
+| 指令 | 用途 |
+|---|---|
+| `/memory list [N]` | 列出当前会话最近活跃的 N 条记忆（默认 10，最多 50） |
+| `/memory search <关键词>` | 双通道搜索（关键词 + 向量） |
+| `/memory summarize [N]` | 手动总结最近 N 轮对话为记忆（不传 N 则总结全部上下文） |
+| `/memory import_astrbot <文件路径> [N]` | 从 AstrBot 导出的 JSONL 历史中提取记忆，`N` 为最多导入轮数（默认 30） |
+| `/memory pin <id>` | 切换钉选状态。钉选的桶 importance 锁 10、永不衰减、永不合并 |
+| `/memory forget <id>` | 沉底（标记 resolved=True，关键词仍可唤醒） |
+| `/memory delete <id> [confirm]` | 永久删除（二次确认） |
+| `/memory clear [confirm]` | 清空当前会话所有记忆（管理员，二次确认） |
+| `/memory stats` | 当前会话状态 + 衰减引擎运行情况 |
+| `/memory help` | 子指令清单 |
+
+---
+
+## LLM 工具（模型自主调用）
+
+模型在对话中会看到 6 个工具，下面是它们的简要含义。普通用户不需要管这些，模型会按需调用。
+
+| 工具 | 含义 |
+|---|---|
+| `record_memory(content, importance, tags, pinned)` | 记住一件事。`importance` 1-10，`pinned=True` 创建核心准则永不忘 |
+| `record_feel(content, source_bucket_id, valence)` | 记下模型自己的感受。`source_bucket_id` 指向被消化的源记忆，会被标记 `digested` |
+| `record_diary(content)` | 把一大段日记/长文本拆分为多条独立记忆。适合用户一次倾诉很多内容时 |
+| `recall_memory(query, domain, limit, importance_min)` | 主动检索相关记忆。`domain="feel"` 进入感受独立通道；`importance_min>=1` 进入「批量拉重要记忆」模式 |
+| `reflect_memory(limit)` | 自省/做梦：读最近几条记忆 + 引导自省 + embedding 连接提示 + feel 结晶提示。典型用法是新对话开头调一次 |
+| `forget_memory(bucket_id, mode)` | mode='resolve' 沉底 / 'delete' 永久删除 |
+
+**模型一定要主动调用这些吗？** 不一定。`auto_record_enabled=True` 时，即使模型没调 `record_memory`，插件后台也会启发式判断要不要存。但模型主动调用的质量更高，因为它带着对当前对话的理解。
+
+**对话启动建议序列**（参考 Ombre Brain 的设计）：
+1. `reflect_memory()` — 消化最近记忆，看有什么沉淀，决定要不要 `record_feel` / `forget_memory`
+2. （可选）`recall_memory(domain="feel")` — 读以前留下的感受
+3. 开始和用户说话；记忆注入由 `on_llm_request` 钩子自动完成
+
+### 与 Ombre Brain 工具的映射关系
+
+如果你之前用过 Ombre Brain，下面这张表帮你快速对应：
+
+| Ombre Brain | 本插件 | 备注 |
+|---|---|---|
+| `breath()` 浮现 | 由 `on_llm_request` 钩子自动完成 | 不再需要模型主动调用，注入透明 |
+| `breath(query=...)` | `recall_memory(query=...)` | 双通道搜索 |
+| `breath(domain="feel")` | `recall_memory(domain="feel")` | 感受独立通道 |
+| `breath(importance_min=N)` | `recall_memory(importance_min=N)` | 批量拉重要记忆 |
+| `hold(content=...)` | `record_memory(content=...)` | 普通事件记忆 |
+| `hold(feel=True, ...)` | `record_feel(...)` | 模型感受 |
+| `grow(content=...)` | `record_diary(content=...)` | 长文本拆分 |
+| `dream()` | `reflect_memory()` | 自省/做梦 |
+| `trace(resolved=1)` | `forget_memory(bucket_id, mode='resolve')` | 沉底 |
+| `trace(delete=True)` | `forget_memory(bucket_id, mode='delete')` | 永久删除 |
+| `trace` 修改元数据 | 通过仪表盘编辑 | 不再走工具 |
+| `pulse` | `/memory stats` 指令 + 仪表盘 | 拆分到用户层 |
+
+差异说明：
+- **浮现自动化**：Ombre Brain 要求模型在每次对话开头主动调 `breath()`；本插件改成由 AstrBot 钩子自动注入到 `system_prompt`，模型零负担
+- **元数据编辑**：Ombre Brain 用 `trace` 工具改字段，本插件改用浏览器仪表盘点击编辑（更直观，且业务规则会经过 `MemoryManager.update` 统一钳制）
+- **状态查看**：Ombre Brain 用 `pulse` 让模型读，本插件拆为用户的 `/memory stats` 指令 + 仪表盘统计栏，避免占用模型上下文
+
+---
+
+## 手动总结与历史导入
+
+### `/memory summarize [N]`
+
+手动触发对当前对话上下文的记忆提取。适合在一段重要对话结束后使用，确保关键信息不被遗漏。
+
+- 不传 `N`：总结当前对话的全部上下文（或配置的 `summarize_default_rounds` 轮）
+- 传 `N`：只总结最近 N 轮对话
+
+流程：从 AstrBot 对话历史中提取 user-assistant 对话对 → 喂给 LLM 拆分为独立记忆条目 → 每条走 merge 检测（相似内容自动合并到已有桶）。
+
+### `/memory import_astrbot <文件路径> [N]`
+
+从 AstrBot 导出的 `.jsonl` 对话历史文件中批量提取记忆。
+
+- 在 AstrBot Web 管理面板导出对话历史（JSONL 格式）
+- 执行 `/memory import_astrbot D:\path\to\export.jsonl 50`（最多导入 50 轮）
+- 系统会自动过滤系统提示、RAG 注入块等非用户内容
+- 记忆以 AI 第一人称视角记录（"我"=AI，"你"=用户）
+
+---
+
+## 调用成本调优
+
+每个值得记的对话回合，本插件相比传统记忆插件**多 1~2 次 LLM 调用 + 1 次 embedding**。如果你重视成本，按需关闭：
+
+| 场景 | 关哪个 | 损失什么 |
+|---|---|---|
+| 完全信任模型自主决定 | `auto_record_enabled = false` | 模型没调时不会兜底（可能漏记） |
+| 不需要 LLM 复核自动记录 | `auto_record_use_judge = false` | 启发式通过即记，误记率略升 |
+| 不需要情感坐标 / 智能合并 | `tagging_enabled = false` | 元数据全用默认（domain="未分类" 等），相似话题会重复建桶 |
+| 不需要随机联想 | `random_drift_enabled = false`（高级配置）| 检索结果不足时不会主动漂浮旧记忆，输出更可预测 |
+
+三个核心 toggle 全关 + `auto_record_enabled=false` 时，每个回合的 LLM 调用回到「主对话 + tool 后续 = 2 次」，跟最朴素的 RAG 插件持平。但同时也失去了"像人一样记忆"的几乎所有特性。
+
+**典型回合的 LLM 调用次数**（默认全开）：
+- 注入阶段：0 次（搜索是纯 embedding/keyword）
+- 主对话：1 次
+- 模型主动调 `record_memory`：触发 1 次 analyze + 可能 1 次 merge = 1~2 次
+- 模型不调 `record_memory`，启发式通过：1 次 judge + 1 次 analyze + 可能 1 次 merge = 2~3 次
+- 模型调 `record_diary`：1 次 digest + N 次 merge（每条目独立合并检测，无 analyze 重复）
+
+随机漂流不调 LLM；reflect_memory 不调 LLM（连接提示和结晶提示都基于已有 embedding）；recall_memory 在 `domain="feel"` / `importance_min` 模式下也不调 LLM。
+
+---
+
+## 数据存储
+
+```
+data/plugin_data/astrbot_plugin_ob_memory/
+├── memory.db                  # 主数据库（不要直接编辑）
+├── memory.db-wal              # SQLite WAL 模式临时文件
+├── memory.db-shm              #
+└── dashboard_auth.json        # 仪表盘密码（盐 + 哈希），文件权限 600
+```
+
+**备份**：把整个目录拷走即可，所有记忆 + 向量 + 仪表盘密码都在里面。**迁移**：把目录复制到新机器对应位置即可，无需任何特殊步骤。
+
+**不要直接编辑 `memory.db`**——通过 `/memory delete` / `/memory clear` 指令、或仪表盘的删除按钮来管理。
+
+---
+
+## 隔离粒度（scope_mode）
+
+这是插件最核心的语义之一。用 `scope_mode` 决定「记忆按什么粒度隔离」：
+
+| 模式 | session_id 形式 | 适合谁 |
+|---|---|---|
+| `conversation` (默认) | `conv:{cid}` | 每个对话窗口独立。AI 伴侣场景推荐——跟 ChatGPT/Claude 心理模型一致 |
+| `user` | `user:{sender_id}` | 同一用户跨窗口、跨平台共享。想要"无论我在哪聊都是同一个 AI"的用户选这个 |
+| `origin` | `unified_msg_origin` | 同一群/私聊共享。群聊场景下需要全员看到同一份记忆 |
+
+**重要不变量：切换 `scope_mode` 不会迁移已有数据。** 在 `conversation` 模式下记的东西，切到 `user` 后会"看不见"——切回去就能再看到。这避免了"切一下模式就把所有记忆搅乱"的事故。
+
+---
+
+## 测试与开发
+
+```bash
+# 跑测试套件（不需要 AstrBot 在运行）
+python -m pytest data/plugins/astrbot_plugin_ob_memory/tests -q
+
+# 格式化 + 静态检查
+ruff format data/plugins/astrbot_plugin_ob_memory
+ruff check data/plugins/astrbot_plugin_ob_memory
+```
+
+当前测试覆盖：**282 个用例**，包括：
+- `test_models.py` — clamp 行为 + bucket id 唯一性
+- `test_storage.py` — schema 迁移 + 外键级联
+- `test_serialization.py` — bucket 与 SQL row 双向转换
+- `test_memory_manager.py` — CRUD + session 隔离 + touch + 时间涟漪
+- `test_decay_engine.py` — 衰减公式各分支 + 短/长期边界连续性 + 超久远记忆不再 overflow + 后台循环
+- `test_search_service.py` — 关键词权重 + 向量 fallback + resolved 降权
+- `test_surface_strategy.py` — pinned 优先 + 冷启动 + token 预算
+- `test_memory_writer.py` — hold / hold_feel + 合并阈值确定性
+- `test_embedding_service.py` — pack/unpack + cosine + session 隔离
+- `test_tagger.py` — analyze / merge / judge 容错路径
+- `test_llm_tools.py` — record_memory / record_feel / recall_memory / forget_memory 端到端
+- `test_llm_tools_extra.py` — record_diary / reflect_memory + recall_memory 增强模式
+- `test_llm_hooks.py` — 注入 + auto-record 完整流程
+- `test_commands.py` — `/memory` 子指令含二段确认
+- `test_session_resolver.py` — 三种模式 + fallback
+- `test_scope_mode_integration.py` — scope 切换不污染数据
+- `test_cost_control_toggles.py` — 成本控制 toggle 真的跳过 LLM 调用
+- `test_dashboard_smoke.py` — 仪表盘鉴权流程 + API 401 行为 + 路由注册 + 脉搏页关键入口静态 smoke
+
+## 项目结构
+
+```
+astrbot_plugin_ob_memory/
+├── _conf_schema.json              # AstrBot UI 配置（8 项常用 + advanced_mode 解锁 14 项高级）
+├── metadata.yaml                  # 插件元数据
+├── main.py                        # MemoryPlugin 主类，注册 hooks/tools/commands/dashboard
+├── core/                          # 核心引擎
+│   ├── models.py
+│   ├── memory_manager.py
+│   ├── memory_writer.py
+│   ├── decay_engine.py
+│   ├── dehydrator.py
+│   ├── embedding_service.py
+│   ├── tagger.py
+│   ├── search_service.py
+│   ├── surface_strategy.py
+│   ├── session_resolver.py
+│   └── prompts.py
+├── handlers/                      # AstrBot 接入层
+│   ├── llm_hooks.py
+│   ├── llm_tools.py
+│   └── commands.py
+├── dashboard/                     # 嵌入式可视化管理面板
+│   ├── server.py
+│   ├── auth.py
+│   └── static/
+├── storage/                       # SQLite 包装
+│   ├── db.py
+│   └── schema.py
+└── tests/                         # 282 个测试用例
+```
+
+---
+
+## 已知限制 / 路线图
+
+- **scope_mode 数据迁移**：切换模式后已有桶不会自动按新规则重新分组。如果有需要可以加 `/memory migrate-scope` 指令
+- **Russell 坐标外的情感模型**：目前只支持 valence + arousal 二维。未来可能加上 dominance 形成 PAD 三维
+- **记忆重构（valence ±0.1 偏移）尚未在注入层应用**：`SearchService` 已支持 `query_valence` 参数，但 `on_llm_request` 钩子目前不传当前情绪上下文。需要时可基于会话最近几轮的情感分布做估计
+
+---
+
+## 致谢
+
+- [Ombre Brain](https://github.com/P0luz/Ombre-Brain) by P0luz —— 衰减公式、Russell 坐标、感受/事件双层这些核心机制的灵感来源
+- [LivingMemory](https://github.com/lxfight/astrbot_plugin_livingmemory) by lxfight —— 成熟的 AstrBot 记忆插件参考实现，配置文件结构与 WebUI 接入方式参考了它的做法
+
+## 许可证
+
+AGPL-3.0
