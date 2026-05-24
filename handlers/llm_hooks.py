@@ -33,7 +33,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from ..core.decay_engine import calculate_score
 from ..core.search_service import SearchHit
 from ..core.surface_strategy import estimate_tokens
-from .commands import format_digest_pairs
+from .commands import _extract_pairs, format_digest_pairs
 
 if TYPE_CHECKING:
     from ..main import MemoryPlugin
@@ -49,6 +49,23 @@ MEMORY_BLOCK_HEADER: str = "=== 长期记忆 ==="
 MEMORY_BLOCK_FOOTER: str = "=== 记忆结束 ==="
 """Wrap injected memories in unmistakable headers so any debugging
 session can trace where the prompt content came from."""
+
+DEFAULT_AUTO_RECORD_MODE: str = "every_n_turns"
+"""Auto-record dispatch mode. One of:
+
+- ``per_turn``: legacy mode. After every chat turn the heuristic +
+  LLM judge decide whether to record this single turn.
+- ``every_n_turns``: counts turns per session and triggers a
+  ``hold_diary`` summarisation of the last N turns once the counter
+  reaches the threshold. Mirrors how ``/memory summarize N`` works,
+  just on a timer.
+- ``disabled``: never run the fallback. The model's own
+  ``record_memory`` / ``record_feel`` / ``record_diary`` tool calls
+  are the only path.
+"""
+DEFAULT_AUTO_RECORD_EVERY_N_TURNS: int = 20
+"""How many user/assistant turns to accumulate before triggering an
+auto-summary when ``auto_record_mode == 'every_n_turns'``."""
 
 DEFAULT_AUTO_RECORD_MIN_CHARS: int = 60
 DEFAULT_AUTO_RECORD_SKIP_PATTERNS: tuple[str, ...] = (
@@ -499,11 +516,21 @@ class MemoryHooksMixin:
         if not bool(cfg.get("auto_record_enabled", True)):
             return
 
+        mode = str(cfg.get("auto_record_mode", DEFAULT_AUTO_RECORD_MODE)).lower()
+        if mode == "disabled":
+            return
+        if mode not in ("per_turn", "every_n_turns"):
+            logger.debug("[memory] unknown auto_record_mode=%r, falling back to %s", mode, DEFAULT_AUTO_RECORD_MODE)
+            mode = DEFAULT_AUTO_RECORD_MODE
+
         session_id = await _resolve_session_via_plugin(self, event)
         if self._is_session_disabled(session_id):
             return
 
-        # Skip if the model already recorded memory this turn.
+        # Skip the auto-record path if the model already recorded memory
+        # via its own tool calls this turn. In ``every_n_turns`` mode we
+        # also reset the counter so we don't double-record by summarising
+        # the same window immediately after.
         tools_called = list(getattr(response, "tools_call_name", []) or [])
         if any(
             tool_name in tools_called
@@ -512,6 +539,9 @@ class MemoryHooksMixin:
             logger.debug(
                 "[memory] auto-record skipped: tools already called %s", tools_called
             )
+            if mode == "every_n_turns":
+                counters = self._get_auto_record_counters()
+                counters.pop(session_id, None)
             return
 
         # Need a non-empty user message and assistant reply.
@@ -530,6 +560,35 @@ class MemoryHooksMixin:
             )
             return
 
+        if mode == "every_n_turns":
+            try:
+                n = int(
+                    cfg.get(
+                        "auto_record_every_n_turns",
+                        DEFAULT_AUTO_RECORD_EVERY_N_TURNS,
+                    )
+                )
+            except (TypeError, ValueError):
+                n = DEFAULT_AUTO_RECORD_EVERY_N_TURNS
+            if n <= 0:
+                return
+
+            counters = self._get_auto_record_counters()
+            counter = counters.get(session_id, 0) + 1
+            if counter < n:
+                counters[session_id] = counter
+                logger.debug(
+                    "[memory] every_n_turns counter session=%s %d/%d",
+                    session_id, counter, n,
+                )
+                return
+
+            # Threshold reached — reset and trigger summary in background.
+            counters[session_id] = 0
+            asyncio.create_task(self._auto_summary_task(event, session_id, n))
+            return
+
+        # ----- per_turn fallback (legacy behaviour) -----------------------
         try:
             min_chars = int(
                 cfg.get("auto_record_min_chars", DEFAULT_AUTO_RECORD_MIN_CHARS)
@@ -552,6 +611,78 @@ class MemoryHooksMixin:
         # Spawn the judgement + record flow in the background — must not
         # block the user-facing reply.
         asyncio.create_task(self._auto_record_task(session_id, user_msg, assistant_msg))
+
+    def _get_auto_record_counters(self: MemoryPlugin) -> dict[str, int]:
+        """Lazy-init a per-session turn counter dict on the plugin instance.
+
+        State lives in process memory only; counters reset when AstrBot
+        restarts. That's intentional — we don't want to persist a knob
+        whose semantics are 'how many turns since last summary'.
+        """
+        counters = getattr(self, "_auto_record_turn_counters", None)
+        if counters is None:
+            counters = {}
+            self._auto_record_turn_counters = counters  # type: ignore[attr-defined]
+        return counters
+
+    async def _auto_summary_task(
+        self: MemoryPlugin,
+        event: AstrMessageEvent,
+        session_id: str,
+        n_turns: int,
+    ) -> None:
+        """Background body for ``every_n_turns`` mode: summarise last N
+        user/assistant rounds via the existing ``hold_diary`` path.
+
+        Reuses :func:`_extract_pairs` from the commands module so we
+        tolerate the same heterogeneous history shapes the
+        ``/memory summarize`` command supports.
+        """
+        if self.writer is None:
+            return
+
+        try:
+            history = await self._get_conversation_history(event)  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.debug("[memory] auto-summary history fetch failed: %s", e)
+            return
+
+        if not history:
+            logger.debug("[memory] auto-summary skipped: empty history")
+            return
+
+        pairs = _extract_pairs(history)
+        if not pairs:
+            logger.debug("[memory] auto-summary skipped: no user/assistant pairs in history")
+            return
+
+        # Take the most recent N pairs only.
+        pairs = pairs[-n_turns:]
+        text = format_digest_pairs(pairs).strip()
+        if not text:
+            return
+
+        # Cap the text size so we don't blow the tagger's context window
+        # if N happens to be very large or messages are huge.
+        if len(text) > 8000:
+            text = text[-8000:]
+
+        try:
+            result = await self.writer.hold_diary(session_id, text)
+        except Exception as e:
+            logger.debug("[memory] auto-summary hold_diary raised: %s", e)
+            return
+
+        entry_ids = [h.bucket_id for h in result.entries]
+        logger.info(
+            "[memory] auto-summary session=%s n_turns=%d ids=%s created=%s merged=%s failed=%s",
+            session_id,
+            len(pairs),
+            entry_ids,
+            result.created,
+            result.merged,
+            result.failed,
+        )
 
     async def _auto_record_task(
         self: MemoryPlugin,
