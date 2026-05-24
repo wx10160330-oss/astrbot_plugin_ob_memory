@@ -50,6 +50,35 @@ def _normalize_text_list(raw: Any) -> list[str]:
     return []
 
 
+def _coerce_timestamp(value: Any) -> float | None:
+    """Best-effort convert a dashboard-supplied date value to a unix
+    timestamp (seconds). Accepts ``datetime-local`` strings (the format
+    emitted by ``<input type="datetime-local">``), ISO 8601 strings and
+    numeric values. Returns ``None`` for empty / unparseable inputs.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # ``datetime-local`` uses ``T`` as the separator; ``fromisoformat``
+        # handles that natively. We also accept space-separated variants
+        # for completeness.
+        try:
+            return datetime.fromisoformat(s).timestamp()
+        except ValueError:
+            try:
+                return float(s)
+            except ValueError:
+                return None
+    return None
+
+
 def _bucket_payload(bucket, *, score: float | None = None) -> dict[str, Any]:
     payload = {
         "id": bucket.id,
@@ -803,6 +832,17 @@ class DashboardServer:
             domain = _normalize_text_list(body.get("domain"))
             if domain:
                 updates["domain"] = domain
+            # Honour a user-supplied creation date for manual inscription.
+            # Skip when the writer merged into an existing bucket — we don't
+            # want to silently overwrite the older memory's timestamp.
+            if not getattr(result, "was_merged", False):
+                created_raw = body.get("created", body.get("created_at"))
+                created_ts = _coerce_timestamp(created_raw)
+                if created_ts is not None and abs(created_ts - bucket.created_at) > 1.0:
+                    updates["created_at"] = created_ts
+                    # Align last_active_at so the new memory doesn't show up
+                    # as "just touched" in surface / decay calculations.
+                    updates["last_active_at"] = created_ts
             if updates:
                 updated = await self.plugin.manager.update(session_id, bucket.id, **updates)
                 if updated is not None:
@@ -856,13 +896,21 @@ class DashboardServer:
             if "last_active" in body and "last_active_at" not in fields:
                 fields["last_active_at"] = body["last_active"]
             if "created" in body and "created_at" not in fields:
-                created_value = body["created"]
-                if isinstance(created_value, str):
-                    try:
-                        created_value = datetime.fromisoformat(created_value).timestamp()
-                    except ValueError:
-                        created_value = body["created"]
-                fields["created_at"] = created_value
+                ts = _coerce_timestamp(body["created"])
+                if ts is not None:
+                    fields["created_at"] = ts
+            elif "created_at" in fields:
+                ts = _coerce_timestamp(fields["created_at"])
+                if ts is None:
+                    fields.pop("created_at", None)
+                else:
+                    fields["created_at"] = ts
+            if "last_active_at" in fields:
+                ts = _coerce_timestamp(fields["last_active_at"])
+                if ts is None:
+                    fields.pop("last_active_at", None)
+                else:
+                    fields["last_active_at"] = ts
             if "domain" in body:
                 fields["domain"] = _normalize_text_list(body.get("domain"))
             if "tags" in body:
