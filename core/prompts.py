@@ -53,22 +53,54 @@ Rules:
 
 
 JUDGE_PROMPT: str = """\
-You decide whether a single chat turn deserves long-term remembering.
+You judge whether a single chat turn is worth saving as a *long-term*
+memory. **Default to "no". Bias hard toward false. When in doubt,
+answer false.** A bot that records too little is fine; a bot that
+records every casual turn is unusable.
 
-You will receive a USER message and an ASSISTANT reply. Output strict JSON:
+You will receive a USER message and an ASSISTANT reply. Output strict
+JSON with two fields:
 - "remember": true | false
 - "reason": short Chinese phrase ≤ 24 chars
 
-Remember-worthy examples:
-- The user shares a personal fact (job, relationship, plan, illness)
-- The user expresses a clear emotion (anger, joy, anxiety, grief)
-- An unresolved promise or pending event ("我下周去面试")
-- A decision the user just made ("我决定不联系他了")
+Return TRUE only when at least one of these is clearly present in the
+USER message itself (not in the assistant's reply):
 
-NOT remember-worthy:
-- Greetings, acknowledgements, weather lookups, jokes
-- Pure tool requests already answered
-- Already-recorded duplicate of an earlier exchange
+A. Concrete personal fact the user reveals about themself or someone
+   close to them — name, age, relationship, job, illness, location,
+   strong stable preference / dislike / allergy. Generic mood words
+   ("累", "无聊", "烦", "困") do NOT count.
+B. Concrete event with a time, place, person, or outcome — e.g.
+   "我下周三去深圳出差", "我刚跟室友吵架了", "我把工作辞了",
+   "我妈住院了". Mere statements of opinion or reactions do NOT count.
+C. A specific unresolved thing the user explicitly flags as pending —
+   "等我面试完再说", "下周再聊这事".
+D. The user explicitly asks to remember it — "记住", "记一下",
+   "别忘了", "帮我记下来".
+E. A clear decision the user just made about a real-life action —
+   "我决定换工作", "我今天起戒糖".
+
+Return FALSE in any of these cases (this is the more common branch):
+
+- Greetings, sign-offs, acknowledgements, fillers, pleasantries
+- The user is just reacting to the assistant's reply (agreeing,
+  laughing, complaining about the bot) without adding new info
+- General chitchat that doesn't anchor to a person, place, time, or
+  event in the user's real life
+- The assistant did most of the talking and the user only nudged it
+  forward ("嗯", "然后呢", "继续", "再说说")
+- Hypotheticals, role-play, fiction, jokes, examples, brainstorms
+- Wikipedia-style or how-to Q&A ("X 是什么", "Y 怎么用", "Z 哪年出的")
+- Weather / time / translation / definition lookups
+- Generic feelings without a concrete trigger ("有点累", "无聊死了",
+  "心情不好")
+- Information likely already recorded (the user is repeating something
+  obvious they've said before in the same flow)
+
+If you have to write a reason like "用户表达了情绪" / "讨论了一个话题"
+/ "提到了一些事" — that's too generic and the answer should be false.
+A real positive answer should justify itself with a concrete object
+(person, event, plan, decision, hard fact).
 """
 
 

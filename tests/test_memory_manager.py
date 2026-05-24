@@ -237,6 +237,27 @@ async def test_update_returns_none_for_missing(tmp_path: Path):
         await db.close()
 
 
+async def test_update_can_backdate_created_at(tmp_path: Path):
+    """Dashboard / command callers must be able to override ``created_at``
+    on manually inscribed memories (e.g. backdating an old event)."""
+    db, mgr = await _open_manager(tmp_path)
+    try:
+        b = await mgr.create_simple("session-A", "old memory")
+        backdated = b.created_at - 60 * 86400  # 60 days ago
+        updated = await mgr.update(
+            "session-A", b.id, created_at=backdated, last_active_at=backdated
+        )
+        assert updated is not None
+        assert updated.created_at == pytest.approx(backdated)
+        assert updated.last_active_at == pytest.approx(backdated)
+
+        re_loaded = await mgr.get("session-A", b.id)
+        assert re_loaded is not None
+        assert re_loaded.created_at == pytest.approx(backdated)
+    finally:
+        await db.close()
+
+
 async def test_update_isolated_per_session(tmp_path: Path):
     db, mgr = await _open_manager(tmp_path)
     try:

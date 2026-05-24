@@ -609,21 +609,31 @@ class MemoryCommandsMixin:
         if n <= 0:
             n = default_rounds  # 0 means "all"
 
-        # Fetch conversation history from AstrBot
+        # Fetch conversation history from AstrBot. We try conversation_manager
+        # first (works for non-WebChat platforms and AstrBot < 4.0) and fall
+        # back to PlatformMessageHistory (WebChat in v4+).
         try:
-            history = await self._get_conversation_history(event)
+            history, debug = await self._get_conversation_history(event)
         except Exception as e:
             yield event.plain_result(f"获取对话历史失败：{e}")
             return
 
         if not history:
-            yield event.plain_result("当前对话没有历史记录，无法总结。")
+            yield event.plain_result(
+                "当前对话没有历史记录，无法总结。\n"
+                f"（调试信息：{debug}）"
+            )
             return
 
         # Extract user-assistant pairs (one "round" = one user + one assistant)
         pairs = _extract_pairs(history)
         if not pairs:
-            yield event.plain_result("当前对话没有可总结的内容。")
+            shape = _describe_history_shape(history)
+            yield event.plain_result(
+                "当前对话没有可总结的内容。\n"
+                f"（拿到 {len(history)} 条历史但没能拼出 user/assistant 轮次；"
+                f"{debug}；样本：{shape}）"
+            )
             return
 
         # Limit to last N rounds if specified
@@ -666,22 +676,115 @@ class MemoryCommandsMixin:
 
     async def _get_conversation_history(
         self: MemoryPlugin, event: AstrMessageEvent
-    ) -> list[dict]:
-        """Retrieve the current conversation's message history."""
-        import json
+    ) -> tuple[list[dict], str]:
+        """Retrieve the current conversation's message history.
 
-        conv_mgr = self.context.conversation_manager
-        umo = event.unified_msg_origin
-        cid = await conv_mgr.get_curr_conversation_id(umo)
-        if not cid:
-            return []
-        conversation = await conv_mgr.get_conversation(umo, cid)
-        if not conversation or not conversation.history:
-            return []
-        try:
-            return json.loads(conversation.history)
-        except (json.JSONDecodeError, TypeError):
-            return []
+        Returns ``(history, debug_info)``. ``history`` is a list of
+        OpenAI-format messages (possibly empty). ``debug_info`` is a short
+        string describing which paths were tried and why they returned
+        empty, surfaced to the user when summarize finds nothing to chew on
+        so we can tell whether the problem is the conversation manager,
+        the platform message history table, or just a genuinely empty
+        conversation.
+        """
+        umo = getattr(event, "unified_msg_origin", None) or "<unknown>"
+        notes: list[str] = []
+
+        # Path 1: conversation_manager -> Conversation.history (works for
+        # non-WebChat platforms and AstrBot < 4.0).
+        conv_mgr = getattr(self.context, "conversation_manager", None)
+        cid: str | None = None
+        if conv_mgr is None:
+            notes.append("no conversation_manager")
+        else:
+            try:
+                cid = await conv_mgr.get_curr_conversation_id(umo)
+            except Exception as e:
+                notes.append(f"get_curr_conversation_id err: {e}")
+                cid = None
+            if not cid:
+                notes.append(f"no cid for umo={umo}")
+            else:
+                try:
+                    conversation = await conv_mgr.get_conversation(umo, cid)
+                except Exception as e:
+                    notes.append(f"get_conversation err: {e}")
+                    conversation = None
+                if not conversation:
+                    notes.append(f"no conversation for cid={cid}")
+                elif not conversation.history:
+                    notes.append(f"conversation.history empty for cid={cid}")
+                else:
+                    try:
+                        parsed = json.loads(conversation.history)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        notes.append(f"history json parse err: {e}")
+                        parsed = None
+                    if isinstance(parsed, list) and parsed:
+                        return parsed, "; ".join(notes) or "ok via conversation_manager"
+                    elif isinstance(parsed, list):
+                        notes.append("conversation history list empty")
+                    else:
+                        notes.append(
+                            f"conversation history not a list (type={type(parsed).__name__})"
+                        )
+
+        # Path 2: PlatformMessageHistory (WebChat in AstrBot v4+; for other
+        # platforms this table is generally empty).
+        msg_history_mgr = getattr(self.context, "message_history_manager", None)
+        if msg_history_mgr is None:
+            notes.append("no message_history_manager")
+        else:
+            platform_id: str | None = None
+            try:
+                if hasattr(event, "get_platform_id"):
+                    platform_id = event.get_platform_id()
+            except Exception as e:
+                notes.append(f"get_platform_id err: {e}")
+                platform_id = None
+
+            # WebChat stores PlatformMessageHistory under user_id=cid;
+            # other platforms (if they use it at all) use the umo. We try
+            # both so we don't have to special-case WebChat by name.
+            user_id_candidates: list[str] = []
+            if cid:
+                user_id_candidates.append(cid)
+            if umo and umo not in user_id_candidates:
+                user_id_candidates.append(umo)
+
+            platform_id_candidates = [platform_id] if platform_id else []
+            if "webchat" not in platform_id_candidates:
+                platform_id_candidates.append("webchat")
+
+            for pid in platform_id_candidates:
+                for uid in user_id_candidates:
+                    try:
+                        records = await msg_history_mgr.get(
+                            platform_id=pid,
+                            user_id=uid,
+                            page=1,
+                            page_size=500,
+                        )
+                    except Exception as e:
+                        notes.append(f"msg_history.get({pid},{uid}) err: {e}")
+                        continue
+                    if not records:
+                        notes.append(
+                            f"msg_history.get({pid},{uid}) empty"
+                        )
+                        continue
+                    converted = _convert_platform_history(records)
+                    if converted:
+                        return converted, (
+                            f"ok via message_history({pid},{uid}) "
+                            f"with {len(converted)} msgs"
+                        )
+                    notes.append(
+                        f"msg_history({pid},{uid}) had {len(records)} "
+                        f"records but none convertible"
+                    )
+
+        return [], "; ".join(notes) or "no history sources available"
 
 
 def format_digest_pairs(pairs: list[tuple[str, str]]) -> str:
@@ -696,49 +799,219 @@ def format_digest_pairs(pairs: list[tuple[str, str]]) -> str:
     return "\n".join(text_parts)
 
 
-def _extract_pairs(history: list[dict]) -> list[tuple[str, str]]:
-    """Extract (user_msg, assistant_msg) pairs from OpenAI-format history.
+_ASSISTANT_SENDER_HINTS = {"bot", "assistant", "ai", "model", "system_bot"}
 
-    Skips tool calls, system messages, and incomplete pairs.
+
+def _convert_platform_history(records: list[Any]) -> list[dict]:
+    """Convert ``PlatformMessageHistory`` rows into OpenAI-format messages.
+
+    AstrBot >= 4.0 stores WebChat history in the ``PlatformMessageHistory``
+    table instead of ``Conversation.history``. Each row is one message
+    (user OR bot), with the actual text living under various keys
+    depending on the platform adapter.
+
+    Returns a list of ``{"role": ..., "content": ...}`` dicts in
+    chronological order (oldest first). Records that have no extractable
+    text content are silently skipped.
+    """
+    out: list[dict] = []
+    for rec in records:
+        content = getattr(rec, "content", None)
+        if content is None:
+            continue
+        text = ""
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, dict):
+            for key in ("message", "text", "content", "plain_text"):
+                v = content.get(key)
+                if isinstance(v, str) and v.strip():
+                    text = v.strip()
+                    break
+            if not text:
+                parts = content.get("parts") or content.get("message_parts")
+                if isinstance(parts, list):
+                    chunks = []
+                    for p in parts:
+                        if isinstance(p, str) and p.strip():
+                            chunks.append(p.strip())
+                        elif isinstance(p, dict):
+                            for k in ("text", "message", "content"):
+                                vv = p.get(k)
+                                if isinstance(vv, str) and vv.strip():
+                                    chunks.append(vv.strip())
+                                    break
+                    if chunks:
+                        text = "\n".join(chunks).strip()
+        if not text:
+            continue
+
+        sender_name = (getattr(rec, "sender_name", None) or "").lower()
+        sender_id = (getattr(rec, "sender_id", None) or "").lower()
+        ctype = ""
+        if isinstance(content, dict):
+            raw_type = content.get("type") or content.get("role") or ""
+            if isinstance(raw_type, str):
+                ctype = raw_type.lower()
+
+        role = "user"
+        if (
+            sender_name in _ASSISTANT_SENDER_HINTS
+            or sender_id in _ASSISTANT_SENDER_HINTS
+            or ctype in _ASSISTANT_SENDER_HINTS
+        ):
+            role = "assistant"
+
+        out.append({"role": role, "content": text})
+    return out
+
+
+_USER_ROLE_HINTS = {"user", "human", "you"}
+_ASSISTANT_ROLE_HINTS = {"assistant", "ai", "bot", "model", "system_bot"}
+_SKIP_ROLE_HINTS = {"tool", "function", "system", "_checkpoint", "developer"}
+
+
+def _msg_text(msg: dict) -> str:
+    """Best-effort extract human-readable text out of a single history
+    message regardless of which AstrBot / provider schema produced it."""
+    if not isinstance(msg, dict):
+        return ""
+
+    content = msg.get("content")
+    if content is None:
+        # Some adapters store the text under 'message' / 'text'.
+        for k in ("message", "text", "plain_text"):
+            v = msg.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, str) and p.strip():
+                parts.append(p.strip())
+                continue
+            if isinstance(p, dict):
+                # OpenAI multimodal: {"type": "text", "text": "..."}
+                if (
+                    p.get("type") == "text"
+                    and isinstance(p.get("text"), str)
+                    and p["text"].strip()
+                ):
+                    parts.append(p["text"].strip())
+                    continue
+                # Some schemas put the text directly under "content".
+                for k in ("text", "message", "content", "plain_text"):
+                    v = p.get(k)
+                    if isinstance(v, str) and v.strip():
+                        parts.append(v.strip())
+                        break
+        return "\n".join(parts).strip()
+
+    if isinstance(content, dict):
+        for k in ("text", "message", "content", "plain_text"):
+            v = content.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    return ""
+
+
+def _msg_role(msg: dict) -> str:
+    """Classify a history message as 'user' / 'assistant' / 'skip' / 'unknown'."""
+    if not isinstance(msg, dict):
+        return "unknown"
+    raw = (
+        msg.get("role")
+        or msg.get("type")
+        or msg.get("sender_type")
+        or msg.get("sender")
+        or ""
+    )
+    raw = str(raw).strip().lower()
+    if raw in _USER_ROLE_HINTS:
+        return "user"
+    if raw in _ASSISTANT_ROLE_HINTS:
+        return "assistant"
+    if raw in _SKIP_ROLE_HINTS:
+        return "skip"
+    return "unknown"
+
+
+def _extract_pairs(history: list[dict]) -> list[tuple[str, str]]:
+    """Extract (user_msg, assistant_msg) pairs from a history list.
+
+    Tolerates several common shapes:
+    - OpenAI: ``{"role": "user"|"assistant", "content": str | list[dict]}``
+    - AstrBot WebChat legacy: ``{"type": "user"|"bot", "message": "..."}``
+    - Multimodal content lists with text parts
+
+    Skips tool calls, system messages, and incomplete pairs. Messages
+    whose role can't be identified are simply ignored rather than
+    resetting the pending user message, so a stray unknown entry between
+    a user message and the assistant reply doesn't break pairing.
     """
     pairs: list[tuple[str, str]] = []
     pending_user: str | None = None
 
     for msg in history:
-        role = msg.get("role", "")
-        content = msg.get("content")
+        role = _msg_role(msg)
+        text = _msg_text(msg)
 
         if role == "user":
-            # Extract text from content (may be string or list of parts)
-            if isinstance(content, str):
-                pending_user = content.strip()
-            elif isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                pending_user = " ".join(text_parts).strip()
-            else:
-                pending_user = None
+            pending_user = text or None
+            continue
 
-        elif role == "assistant" and pending_user:
-            # Only take assistant messages with text content (skip tool_calls-only)
-            if isinstance(content, str) and content.strip():
-                pairs.append((pending_user, content.strip()))
+        if role == "assistant":
+            if pending_user is None:
+                continue
+            if text:
+                pairs.append((pending_user, text))
                 pending_user = None
-            elif content is None and msg.get("tool_calls"):
-                # Skip tool-call-only assistant messages; wait for the next
-                # assistant message that has actual text content.
-                pass
-            else:
-                pending_user = None
+                continue
+            # Tool-call-only assistant messages (no text) -> keep waiting
+            # for the next assistant message with actual content.
+            if isinstance(msg, dict) and msg.get("tool_calls"):
+                continue
+            # Empty assistant message we can't pair; drop the pending user.
+            pending_user = None
+            continue
 
-        elif role in ("tool", "system", "_checkpoint"):
-            # Skip these; don't reset pending_user so we can still pair
-            # with the next assistant message after tool results.
-            pass
+        # role in {"skip", "unknown"}: do nothing, keep pending_user.
 
     return pairs
+
+
+def _describe_history_shape(history: list[dict], limit: int = 3) -> str:
+    """Short string describing the first few history items' shape, used
+    in /memory summarize debug output when pairs can't be extracted."""
+    samples: list[str] = []
+    for i, msg in enumerate(history[:limit]):
+        if not isinstance(msg, dict):
+            samples.append(f"#{i} type={type(msg).__name__}")
+            continue
+        keys = sorted(msg.keys())
+        role_raw = (
+            msg.get("role")
+            or msg.get("type")
+            or msg.get("sender_type")
+            or msg.get("sender")
+            or "?"
+        )
+        content = msg.get("content")
+        content_type = type(content).__name__
+        if isinstance(content, str):
+            content_type = f"str({len(content)})"
+        elif isinstance(content, list):
+            content_type = f"list({len(content)})"
+        samples.append(
+            f"#{i} role={role_raw!r} content={content_type} keys={keys}"
+        )
+    return " | ".join(samples)
 
 
 def _flatten_astrbot_content(parts: Any) -> str:
