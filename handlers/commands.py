@@ -628,9 +628,11 @@ class MemoryCommandsMixin:
         # Extract user-assistant pairs (one "round" = one user + one assistant)
         pairs = _extract_pairs(history)
         if not pairs:
+            shape = _describe_history_shape(history)
             yield event.plain_result(
                 "当前对话没有可总结的内容。\n"
-                f"（拿到 {len(history)} 条历史但没能拼出 user/assistant 轮次；{debug}）"
+                f"（拿到 {len(history)} 条历史但没能拼出 user/assistant 轮次；"
+                f"{debug}；样本：{shape}）"
             )
             return
 
@@ -864,49 +866,152 @@ def _convert_platform_history(records: list[Any]) -> list[dict]:
     return out
 
 
-def _extract_pairs(history: list[dict]) -> list[tuple[str, str]]:
-    """Extract (user_msg, assistant_msg) pairs from OpenAI-format history.
+_USER_ROLE_HINTS = {"user", "human", "you"}
+_ASSISTANT_ROLE_HINTS = {"assistant", "ai", "bot", "model", "system_bot"}
+_SKIP_ROLE_HINTS = {"tool", "function", "system", "_checkpoint", "developer"}
 
-    Skips tool calls, system messages, and incomplete pairs.
+
+def _msg_text(msg: dict) -> str:
+    """Best-effort extract human-readable text out of a single history
+    message regardless of which AstrBot / provider schema produced it."""
+    if not isinstance(msg, dict):
+        return ""
+
+    content = msg.get("content")
+    if content is None:
+        # Some adapters store the text under 'message' / 'text'.
+        for k in ("message", "text", "plain_text"):
+            v = msg.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, str) and p.strip():
+                parts.append(p.strip())
+                continue
+            if isinstance(p, dict):
+                # OpenAI multimodal: {"type": "text", "text": "..."}
+                if (
+                    p.get("type") == "text"
+                    and isinstance(p.get("text"), str)
+                    and p["text"].strip()
+                ):
+                    parts.append(p["text"].strip())
+                    continue
+                # Some schemas put the text directly under "content".
+                for k in ("text", "message", "content", "plain_text"):
+                    v = p.get(k)
+                    if isinstance(v, str) and v.strip():
+                        parts.append(v.strip())
+                        break
+        return "\n".join(parts).strip()
+
+    if isinstance(content, dict):
+        for k in ("text", "message", "content", "plain_text"):
+            v = content.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    return ""
+
+
+def _msg_role(msg: dict) -> str:
+    """Classify a history message as 'user' / 'assistant' / 'skip' / 'unknown'."""
+    if not isinstance(msg, dict):
+        return "unknown"
+    raw = (
+        msg.get("role")
+        or msg.get("type")
+        or msg.get("sender_type")
+        or msg.get("sender")
+        or ""
+    )
+    raw = str(raw).strip().lower()
+    if raw in _USER_ROLE_HINTS:
+        return "user"
+    if raw in _ASSISTANT_ROLE_HINTS:
+        return "assistant"
+    if raw in _SKIP_ROLE_HINTS:
+        return "skip"
+    return "unknown"
+
+
+def _extract_pairs(history: list[dict]) -> list[tuple[str, str]]:
+    """Extract (user_msg, assistant_msg) pairs from a history list.
+
+    Tolerates several common shapes:
+    - OpenAI: ``{"role": "user"|"assistant", "content": str | list[dict]}``
+    - AstrBot WebChat legacy: ``{"type": "user"|"bot", "message": "..."}``
+    - Multimodal content lists with text parts
+
+    Skips tool calls, system messages, and incomplete pairs. Messages
+    whose role can't be identified are simply ignored rather than
+    resetting the pending user message, so a stray unknown entry between
+    a user message and the assistant reply doesn't break pairing.
     """
     pairs: list[tuple[str, str]] = []
     pending_user: str | None = None
 
     for msg in history:
-        role = msg.get("role", "")
-        content = msg.get("content")
+        role = _msg_role(msg)
+        text = _msg_text(msg)
 
         if role == "user":
-            # Extract text from content (may be string or list of parts)
-            if isinstance(content, str):
-                pending_user = content.strip()
-            elif isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                pending_user = " ".join(text_parts).strip()
-            else:
-                pending_user = None
+            pending_user = text or None
+            continue
 
-        elif role == "assistant" and pending_user:
-            # Only take assistant messages with text content (skip tool_calls-only)
-            if isinstance(content, str) and content.strip():
-                pairs.append((pending_user, content.strip()))
+        if role == "assistant":
+            if pending_user is None:
+                continue
+            if text:
+                pairs.append((pending_user, text))
                 pending_user = None
-            elif content is None and msg.get("tool_calls"):
-                # Skip tool-call-only assistant messages; wait for the next
-                # assistant message that has actual text content.
-                pass
-            else:
-                pending_user = None
+                continue
+            # Tool-call-only assistant messages (no text) -> keep waiting
+            # for the next assistant message with actual content.
+            if isinstance(msg, dict) and msg.get("tool_calls"):
+                continue
+            # Empty assistant message we can't pair; drop the pending user.
+            pending_user = None
+            continue
 
-        elif role in ("tool", "system", "_checkpoint"):
-            # Skip these; don't reset pending_user so we can still pair
-            # with the next assistant message after tool results.
-            pass
+        # role in {"skip", "unknown"}: do nothing, keep pending_user.
 
     return pairs
+
+
+def _describe_history_shape(history: list[dict], limit: int = 3) -> str:
+    """Short string describing the first few history items' shape, used
+    in /memory summarize debug output when pairs can't be extracted."""
+    samples: list[str] = []
+    for i, msg in enumerate(history[:limit]):
+        if not isinstance(msg, dict):
+            samples.append(f"#{i} type={type(msg).__name__}")
+            continue
+        keys = sorted(msg.keys())
+        role_raw = (
+            msg.get("role")
+            or msg.get("type")
+            or msg.get("sender_type")
+            or msg.get("sender")
+            or "?"
+        )
+        content = msg.get("content")
+        content_type = type(content).__name__
+        if isinstance(content, str):
+            content_type = f"str({len(content)})"
+        elif isinstance(content, list):
+            content_type = f"list({len(content)})"
+        samples.append(
+            f"#{i} role={role_raw!r} content={content_type} keys={keys}"
+        )
+    return " | ".join(samples)
 
 
 def _flatten_astrbot_content(parts: Any) -> str:
