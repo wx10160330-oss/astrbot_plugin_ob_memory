@@ -31,6 +31,7 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
 from ..core.decay_engine import calculate_score
+from ..core.prompts import MEMORY_PERSONA_PROMPT
 from ..core.search_service import SearchHit
 from ..core.surface_strategy import estimate_tokens
 from .commands import _extract_pairs, format_digest_pairs
@@ -320,6 +321,15 @@ class MemoryHooksMixin:
             return
 
         cfg = self._flat_cfg()
+
+        # ----- Inject memory-behaviour persona prompt -----
+        # Done before search/surface so even when no memories match this
+        # turn, the model still gets the "you have a memory system"
+        # context. Idempotent: skipped if the snippet is already present
+        # (e.g. user pasted it into their persona by hand).
+        if bool(cfg.get("inject_memory_persona", True)):
+            self._inject_memory_persona(req)
+
         try:
             max_search = int(cfg.get("max_search_results", 3))
             max_surface = int(cfg.get("max_surface_results", 2))
@@ -611,6 +621,36 @@ class MemoryHooksMixin:
         # Spawn the judgement + record flow in the background — must not
         # block the user-facing reply.
         asyncio.create_task(self._auto_record_task(session_id, user_msg, assistant_msg))
+
+    def _inject_memory_persona(self: MemoryPlugin, req: ProviderRequest) -> None:
+        """Append the memory-behaviour persona snippet to ``system_prompt``.
+
+        The snippet itself is editable via the ``memory_persona_text``
+        config field — leave it empty to use the plugin's built-in
+        default (``MEMORY_PERSONA_PROMPT``), or paste a custom string in
+        to override.
+
+        Idempotent: if the *current* persona text is already present in
+        ``system_prompt`` (e.g. user also pasted it into their AstrBot
+        persona), we no-op so the model doesn't see two copies.
+
+        Position: appended after the user's existing system_prompt and
+        before the memory block. That ordering matches the natural
+        reading flow:
+        1. user's character identity (their persona)
+        2. memory behaviour rules (this snippet)
+        3. recalled memories for this turn (the memory block, added
+           later in ``_inject_memories``).
+        """
+        cfg = self._flat_cfg()
+        custom = str(cfg.get("memory_persona_text") or "").strip()
+        persona = custom if custom else MEMORY_PERSONA_PROMPT.strip()
+        if not persona:
+            return
+        existing = (req.system_prompt or "").rstrip()
+        if persona in existing:
+            return
+        req.system_prompt = (existing + "\n\n" + persona).strip() if existing else persona
 
     def _get_auto_record_counters(self: MemoryPlugin) -> dict[str, int]:
         """Lazy-init a per-session turn counter dict on the plugin instance.

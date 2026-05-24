@@ -292,6 +292,7 @@ async def test_auto_record_no_judge_records_directly(tmp_path: Path):
         )
         obj.config = {
                 "auto_record_enabled": True,
+                "auto_record_mode": "per_turn",
                 "auto_record_min_chars": 5,
                 "auto_record_use_judge": False,
             }
@@ -357,6 +358,7 @@ async def test_auto_record_judge_default_still_uses_judge(tmp_path: Path):
         )
         obj.config = {
                 "auto_record_enabled": True,
+                "auto_record_mode": "per_turn",
                 "auto_record_min_chars": 5,
                 # use_judge default is True
             }
