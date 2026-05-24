@@ -50,12 +50,18 @@ MEMORY_BLOCK_FOOTER: str = "=== 记忆结束 ==="
 """Wrap injected memories in unmistakable headers so any debugging
 session can trace where the prompt content came from."""
 
-DEFAULT_AUTO_RECORD_MIN_CHARS: int = 30
+DEFAULT_AUTO_RECORD_MIN_CHARS: int = 60
 DEFAULT_AUTO_RECORD_SKIP_PATTERNS: tuple[str, ...] = (
-    r"^/",  # commands
-    r"^[!！?？.。哈嗯啊嘿嘻噢哦呃唔]+$",  # interjections / acknowledgements
+    r"^/",  # slash commands
+    r"^[!！?？.。哈嗯啊嘿嘻噢哦呃唔～~…]+$",  # interjections only
     r"天气|weather",  # weather lookups
-    r"^好的?$|^行$|^可以$|^ok$|^OK$",  # short ACKs
+    r"^好的?$|^行$|^可以$|^ok$|^OK$|^好嘞$|^嗯嗯$|^是的$|^对$|^对啊$|^是$",
+    r"^晚安$|^早安$|^午安$|^早$|^晚啦?$|^bye$|^88$|^拜拜$|^再见$",
+    r"^你好$|^哈喽$|^hi$|^hello$|^在吗$|^在不在$",
+    r"^谢谢$|^谢啦$|^thx$|^thanks$|^thank you$",
+    r"^笑死$|^笑死我了?$|^草$|^哈哈+$|^呵呵+$|^嘿嘿+$|^嘻嘻+$",
+    r"^\.{3,}$|^…+$",  # ellipses only
+    r"^[\u4e00-\u9fff]$",  # a lone CJK character
 )
 
 
