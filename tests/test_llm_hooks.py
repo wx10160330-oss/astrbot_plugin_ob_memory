@@ -305,11 +305,14 @@ async def test_inject_keeps_existing_system_prompt(tmp_path: Path):
 async def test_inject_no_op_when_session_has_no_memories(tmp_path: Path):
     db, obj = await _open(tmp_path)
     try:
+        # Disable persona injection so this test isolates the memory
+        # block path: with no buckets and no persona, system_prompt
+        # must be untouched.
+        obj.config = {"inject_memory_persona": False}
         req = FakeProviderRequest(
             prompt="x", system_prompt="original"
         )
         await obj.memory_on_llm_request(FakeEvent(), req)
-        # No injection: system_prompt stays exactly as-is.
         assert req.system_prompt == "original"
     finally:
         await db.close()
@@ -377,6 +380,75 @@ async def test_inject_touches_only_returned_buckets(tmp_path: Path):
         touched = [b for b in buckets if b.activation_count > 0]
         # Exactly 1 bucket got touched (the one in the surfaced output).
         assert len(touched) == 1
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_memory_persona_injected_when_enabled_and_no_memories(tmp_path: Path):
+    """Persona snippet appended to system_prompt even when no buckets match."""
+    db, obj = await _open(tmp_path)
+    try:
+        # No buckets in DB → no memory block; persona should still inject.
+        obj.config = {"inject_memory_persona": True}
+        req = FakeProviderRequest(prompt="hi", system_prompt="you are X")
+        await obj.memory_on_llm_request(FakeEvent(), req)
+
+        # Persona marker present.
+        assert "memory:" in (req.system_prompt or "")
+        assert "remember_lightly" in (req.system_prompt or "")
+        # User's original persona preserved at the top.
+        assert req.system_prompt.startswith("you are X")
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_memory_persona_disabled_when_toggle_off(tmp_path: Path):
+    """``inject_memory_persona=False`` skips injection."""
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {"inject_memory_persona": False}
+        req = FakeProviderRequest(prompt="hi", system_prompt="you are X")
+        await obj.memory_on_llm_request(FakeEvent(), req)
+        assert "remember_lightly" not in (req.system_prompt or "")
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_memory_persona_custom_override(tmp_path: Path):
+    """Custom ``memory_persona_text`` replaces the built-in default."""
+    db, obj = await _open(tmp_path)
+    try:
+        custom = "CUSTOM_PERSONA_MARKER\nrules: be terse"
+        obj.config = {
+            "inject_memory_persona": True,
+            "memory_persona_text": custom,
+        }
+        req = FakeProviderRequest(prompt="hi", system_prompt="")
+        await obj.memory_on_llm_request(FakeEvent(), req)
+        assert "CUSTOM_PERSONA_MARKER" in (req.system_prompt or "")
+        # The built-in default's tokens must NOT leak through.
+        assert "remember_lightly" not in (req.system_prompt or "")
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_memory_persona_idempotent(tmp_path: Path):
+    """Hook called twice doesn't duplicate the persona."""
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {"inject_memory_persona": True}
+        req = FakeProviderRequest(prompt="hi", system_prompt="")
+        await obj.memory_on_llm_request(FakeEvent(), req)
+        once = req.system_prompt
+        await obj.memory_on_llm_request(FakeEvent(), req)
+        twice = req.system_prompt
+        assert once == twice
+        # Marker appears exactly once.
+        assert (twice or "").count("remember_lightly") == 1
     finally:
         await db.close()
 
@@ -495,7 +567,11 @@ async def test_auto_record_runs_when_judge_says_yes(tmp_path: Path):
             should_record=True, reason="user shared important fact"
         )
         obj.writer = MemoryWriter(obj.manager, tagger=obj.tagger, embedding=None)
-        obj.config = {"auto_record_enabled": True, "auto_record_min_chars": 10}
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "per_turn",
+            "auto_record_min_chars": 10,
+        }
 
         event = FakeEvent(
             message_str="今天面试通过了那家公司的实习 offer，特别激动也有点紧张",

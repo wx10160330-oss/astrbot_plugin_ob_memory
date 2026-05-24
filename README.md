@@ -48,15 +48,19 @@
    ```
    只装了 `rapidfuzz`（关键词检索）和 `starlette` / `uvicorn`（仪表盘）。
 3. **重启 AstrBot**——首次加载时插件会在 `data/plugin_data/astrbot_plugin_ob_memory/` 下创建 `memory.db`（SQLite）。
-4. **在 AstrBot Web 管理面板找到本插件的配置**，按需调整以下常用选项（默认面板里 6 项 + 仪表盘 2 项）：
+4. **在 AstrBot Web 管理面板找到本插件的配置**，按需调整以下常用选项（默认面板里 9 项 + 仪表盘 2 项）：
 
 | 配置项 | 默认值 | 含义 |
 |---|---|---|
 | `scope_mode` | `conversation` | 隔离粒度：`conversation` 每个对话窗口独立 / `user` 同一用户跨窗口/平台共享 / `origin` 同一群/私聊全员共享 |
 | `embedding_provider_id` | （留空） | 用于向量检索的 Embedding 模型 ID。留空使用 AstrBot 默认；没配 embedding provider 时只走关键词检索 |
 | `tagging_enabled` | `true` | 写入时是否调 LLM 自动打标 + 智能合并相似桶。关闭可省每次写入 1 次 LLM 调用 |
-| `auto_record_enabled` | `true` | 模型没主动调 `record_memory` 时，插件是否启发式判断要不要把这一轮存下来 |
-| `auto_record_use_judge` | `true` | 自动记录是否再调一次 LLM 判定「这值得记吗」。关闭可省 1 次 LLM 调用 |
+| `inject_memory_persona` | `true` | 是否在每次 LLM 请求前自动把「记忆行为」YAML 指引拼到 `system_prompt` 末尾，让模型像真人一样自然地用记忆功能（不必再粘到自己的人设里） |
+| `memory_persona_text` | （留空） | 自定义上一项注入的内容。留空 = 用插件内置默认（YAML，介绍长期记忆 + 怎么记 / 怎么用）。要换语气、加例外、换风格直接在文本框里改，保存后下次对话即生效 |
+| `auto_record_enabled` | `true` | 模型没主动调 `record_memory` 时，插件是否启发式 / 周期性兜底把对话存为记忆 |
+| `auto_record_mode` | `every_n_turns` | 兜底模式：`every_n_turns`（推荐）每攒够 N 轮对话整体总结一次 / `per_turn` 每轮单独判定 / `disabled` 完全关掉兜底只信模型自己 `record_memory` |
+| `auto_record_every_n_turns` | `20` | `every_n_turns` 模式下每 N 轮触发一次自动总结。模型自己主动 `record_memory` 时计数器会清零，避免重复。推荐 15-30 |
+| `auto_record_use_judge` | `true` | 仅 `per_turn` 模式生效：自动记录是否再调一次 LLM 判定「这值得记吗」。关闭可省 1 次 LLM 调用 |
 | `dashboard_enabled` | `true` | 是否启用浏览器可视化管理面板 |
 | `dashboard_host` | `127.0.0.1` | 仪表盘监听地址：`127.0.0.1` 仅本机 / `0.0.0.0` 局域网可访问 |
 | `dashboard_port` | `2140` | 仪表盘端口 |
@@ -91,12 +95,13 @@
 
 ### 自定义记忆提示词
 
-在高级配置中有一个 `digest_prompt` 文本框，可以自定义 `/memory summarize`、`/memory import_astrbot` 和 `record_diary` 工具使用的 LLM 提示词。
+本插件有两个可在 UI 直接编辑的提示词文本框，留空都使用内置默认值，修改后下次对话即生效，无需重启：
 
-默认提示词以 **AI 第一人称视角**记忆（"我"=AI，"你"=用户），例如产出的记忆会是：
-> 你告诉我你拿到了 offer，我能感受到你的激动
+- **`memory_persona_text`（常用配置）**——「记忆行为」指引，每次跟模型对话前自动拼到 `system_prompt` 末尾。内置默认是一段简短的 YAML，告诉模型：「你拥有长期记忆 / 哪些该记 / 哪些不该记 / 怎么自然地用记忆工具」。**升级到本版本后建议把人设里那段同义内容删掉**，省下来的字数留给人物刻画。如果你的角色很特殊，可以直接在文本框里改语气、加例外、换格式。
+- **`digest_prompt`（高级配置）**——`/memory summarize`、`/memory import_astrbot` 和 `record_diary` 用到的拆分总结提示词。默认以 **AI 第一人称视角**记忆（"我"=AI，"你"=用户），例如产出的记忆会是：
+  > 你告诉我你拿到了 offer，我能感受到你的激动
 
-如果你想改成其他视角或风格，直接在配置面板填入自定义提示词即可。留空则使用内置默认。修改后立即生效，无需重启。
+  想改成其他视角或风格，文本框里直接改即可。
 
 ---
 
@@ -123,11 +128,12 @@
 on_llm_request 钩子 ──┐
     │                 │
     │   ┌─────────────▼─────────────┐
+    │   │ Memory Persona 注入        │  把「记忆行为」YAML 指引拼到 system_prompt 末尾
     │   │ SearchService             │  关键词 (rapidfuzz) + 向量 (cosine) 双通道检索
     │   │ SurfaceStrategy           │  按 ActivationScore 主动浮现 pinned + 高权重未完结桶
     │   │ Random Drift              │  结果 < 3 时 40% 几率漂一条「忽然想起」
     │   └─────────────┬─────────────┘
-    │                 │ 拼成 [=== 长期记忆 ===] 块
+    │                 │ 拼成 [persona] + [=== 长期记忆 ===] 块
     │                 ▼
     │             LLM Provider ←─── 模型看到记忆，可调用：
     │                 │              record_memory / record_feel / record_diary
@@ -137,11 +143,14 @@ on_llm_request 钩子 ──┐
     │                 │
     └──── on_llm_response 钩子 ──┐
                                   │
-              ┌───────────────────▼─────────────────────┐
-              │  模型已主动 record_memory？             │
-              │  ├─ 是 → 跳过                          │
-              │  └─ 否 → auto_record 启发式 + judge LLM │
-              └───────────────────┬─────────────────────┘
+              ┌───────────────────▼─────────────────────────────┐
+              │  模型已主动 record_memory？                     │
+              │  ├─ 是 → 跳过（计数器清零）                    │
+              │  └─ 否 → 按 auto_record_mode 兜底：             │
+              │       • every_n_turns: 计数+1，满 N 轮一次总结 │
+              │       • per_turn:      启发式 + judge LLM       │
+              │       • disabled:      不兜底                   │
+              └───────────────────┬─────────────────────────────┘
                                   │
                        MemoryWriter.hold()       MemoryWriter.hold_diary()
                                   │              （模型显式调 record_diary 时）
@@ -169,13 +178,13 @@ on_llm_request 钩子 ──┐
 | `surface_strategy.py` | 主动浮现：pinned + 冷启动 + 衰减分排序 |
 | `memory_writer.py` | 高层写入流程：`hold`（单条）+ `hold_feel`（感受）+ `hold_diary`（拆分） |
 | `session_resolver.py` | 把 event 映射为 session_id（按 scope_mode） |
-| `prompts.py` | LLM 模板：ANALYZE / MERGE / JUDGE / DIGEST 四个 |
+| `prompts.py` | LLM 模板：ANALYZE / MERGE / JUDGE / DIGEST + 自动注入的 MEMORY_PERSONA_PROMPT |
 
 ### 接入层（`handlers/` + `dashboard/`）
 
 | 文件 | 职责 |
 |---|---|
-| `handlers/llm_hooks.py` | `@on_llm_request` 注入记忆（含脱水压缩）+ 随机漂流 + `@on_llm_response` 自动记录 |
+| `handlers/llm_hooks.py` | `@on_llm_request` 注入「记忆行为」persona + 记忆（含脱水压缩）+ 随机漂流；`@on_llm_response` 兜底自动记录（per_turn / every_n_turns / disabled 三模式） |
 | `handlers/llm_tools.py` | 6 个 `@filter.llm_tool`：record_memory / record_feel / record_diary / recall_memory / reflect_memory / forget_memory |
 | `handlers/commands.py` | `/memory` 指令组：list / search / summarize / import_astrbot / pin / forget / delete / clear / stats / help |
 | `dashboard/server.py` | Starlette + uvicorn 嵌入式 HTTP 服务，提供 REST API + 单页前端 |
@@ -282,18 +291,22 @@ on_llm_request 钩子 ──┐
 
 | 场景 | 关哪个 | 损失什么 |
 |---|---|---|
-| 完全信任模型自主决定 | `auto_record_enabled = false` | 模型没调时不会兜底（可能漏记） |
-| 不需要 LLM 复核自动记录 | `auto_record_use_judge = false` | 启发式通过即记，误记率略升 |
+| 完全信任模型自主决定 | `auto_record_mode = disabled` 或 `auto_record_enabled = false` | 模型没主动 `record_memory` 时不会兜底（可能漏记） |
+| 不要每轮单独判定，省 LLM 调用 | `auto_record_mode = every_n_turns`（默认）| 单轮的细节可能合并进 N 轮总结里 |
+| 用 `per_turn` 但不要 LLM 复核 | `auto_record_use_judge = false` | 启发式通过即记，误记率略升 |
 | 不需要情感坐标 / 智能合并 | `tagging_enabled = false` | 元数据全用默认（domain="未分类" 等），相似话题会重复建桶 |
 | 不需要随机联想 | `random_drift_enabled = false`（高级配置）| 检索结果不足时不会主动漂浮旧记忆，输出更可预测 |
 
 三个核心 toggle 全关 + `auto_record_enabled=false` 时，每个回合的 LLM 调用回到「主对话 + tool 后续 = 2 次」，跟最朴素的 RAG 插件持平。但同时也失去了"像人一样记忆"的几乎所有特性。
 
-**典型回合的 LLM 调用次数**（默认全开）：
+**典型回合的 LLM 调用次数**（默认 `auto_record_mode=every_n_turns`）：
 - 注入阶段：0 次（搜索是纯 embedding/keyword）
 - 主对话：1 次
-- 模型主动调 `record_memory`：触发 1 次 analyze + 可能 1 次 merge = 1~2 次
-- 模型不调 `record_memory`，启发式通过：1 次 judge + 1 次 analyze + 可能 1 次 merge = 2~3 次
+- 模型主动调 `record_memory`：触发 1 次 analyze + 可能 1 次 merge = 1~2 次（同时把 every_n_turns 计数器归零，避免重复）
+- 模型没调 `record_memory`、计数器尚未达阈值：本轮 0 次额外调用，计数器 +1
+- 模型没调 `record_memory`、计数器满 N 轮：1 次 digest + 每条 merge 检测（跟 `/memory summarize N` 同一套）
+
+切到 `per_turn` 时每轮另起 1 次 judge + 通过后 1 次 analyze + 可能 1 次 merge = 每轮 2~3 次（旧行为，调用最多）。
 - 模型调 `record_diary`：1 次 digest + N 次 merge（每条目独立合并检测，无 analyze 重复）
 
 随机漂流不调 LLM；reflect_memory 不调 LLM（连接提示和结晶提示都基于已有 embedding）；recall_memory 在 `domain="feel"` / `importance_min` 模式下也不调 LLM。
@@ -341,7 +354,7 @@ ruff format data/plugins/astrbot_plugin_ob_memory
 ruff check data/plugins/astrbot_plugin_ob_memory
 ```
 
-当前测试覆盖：**282 个用例**，包括：
+当前测试覆盖：**297 个用例**，包括：
 - `test_models.py` — clamp 行为 + bucket id 唯一性
 - `test_storage.py` — schema 迁移 + 外键级联
 - `test_serialization.py` — bucket 与 SQL row 双向转换
@@ -365,7 +378,7 @@ ruff check data/plugins/astrbot_plugin_ob_memory
 
 ```
 astrbot_plugin_ob_memory/
-├── _conf_schema.json              # AstrBot UI 配置（8 项常用 + advanced_mode 解锁 14 项高级）
+├── _conf_schema.json              # AstrBot UI 配置（11 项常用 + advanced_mode 解锁 14 项高级）
 ├── metadata.yaml                  # 插件元数据
 ├── main.py                        # MemoryPlugin 主类，注册 hooks/tools/commands/dashboard
 ├── core/                          # 核心引擎
@@ -391,7 +404,7 @@ astrbot_plugin_ob_memory/
 ├── storage/                       # SQLite 包装
 │   ├── db.py
 │   └── schema.py
-└── tests/                         # 282 个测试用例
+└── tests/                         # 297 个测试用例
 ```
 
 ---
