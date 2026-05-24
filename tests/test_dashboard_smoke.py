@@ -14,6 +14,7 @@ import io
 import json
 import time
 import zipfile
+from datetime import datetime
 
 import pytest
 
@@ -456,6 +457,37 @@ async def test_dashboard_memories_crud_compat(tmp_path: Path):
         assert resp.status_code == 200
         assert resp.json()["name"] == "已修改"
         assert resp.json()["tags"] == ["offer", "job"]
+
+        # Backdating: editing the memory date via the ``created`` field
+        # must actually persist the new timestamp (not silently reset to
+        # the current time). Regression for the dashboard inscribe-then-
+        # edit-date bug.
+        backdated_iso = "2020-06-15T08:30:00"
+        backdated_ts = datetime.fromisoformat(backdated_iso).timestamp()
+        resp = client.put(
+            "/api/memories/bucket-1", json={"created": backdated_iso}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["created_at"] == pytest.approx(backdated_ts)
+
+        # Manual inscription: a freshly held bucket should adopt the
+        # user-supplied ``created`` field as its creation timestamp.
+        plugin.writer.hold.reset_mock()
+        bucket.created_at = time.time()
+        bucket.last_active_at = bucket.created_at
+        inscribe_iso = "2019-01-02T03:04:05"
+        inscribe_ts = datetime.fromisoformat(inscribe_iso).timestamp()
+        resp = client.post(
+            "/api/memories",
+            json={
+                "content": "陈年旧事",
+                "name": "旧事",
+                "created": inscribe_iso,
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["created_at"] == pytest.approx(inscribe_ts)
+        assert resp.json()["last_active_at"] == pytest.approx(inscribe_ts)
 
         resp = client.post("/api/analyze", json={"content": "拿到 offer"})
         assert resp.status_code == 200

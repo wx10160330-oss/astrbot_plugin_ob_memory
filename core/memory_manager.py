@@ -283,8 +283,12 @@ class MemoryManager:
     # UPDATE
     # ------------------------------------------------------------------
     # Whitelist of fields that callers may patch via ``update``. Storage
-    # columns absent from this set (id, session_id, created_at) are owned
-    # by the manager itself and must not be touched externally.
+    # columns absent from this set (id, session_id) are owned by the
+    # manager itself and must not be touched externally.
+    #
+    # ``created_at`` is intentionally included so dashboard / command
+    # callers can backdate manually-inscribed memories. Internal write
+    # paths still keep their hands off it.
     _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         {
             "name",
@@ -301,6 +305,7 @@ class MemoryManager:
             "model_valence",
             "source_bucket_id",
             "activation_count",
+            "created_at",
             "last_active_at",
         }
     )
