@@ -61,13 +61,26 @@
   "auto_record_enabled": {
     "description": "自动记录兜底",
     "type": "bool",
-    "hint": "开启时即使模型没主动调 record_memory，插件也会启发式判断要不要把这一轮存下来。关闭则完全信任模型自主决定。",
+    "hint": "开启时插件会在模型没主动调 record_memory 的情况下兜底记忆。关闭则完全信任模型自主决定。",
     "default": true
+  },
+  "auto_record_mode": {
+    "description": "兜底模式",
+    "type": "string",
+    "hint": "every_n_turns（推荐）：每攒够 N 轮对话整体总结一次，节省 LLM 调用且不污染记忆库。per_turn：旧行为，每轮都判断要不要单独记下这一轮。disabled：兜底完全关闭，只信模型自己 record_memory。",
+    "options": ["every_n_turns", "per_turn", "disabled"],
+    "default": "every_n_turns"
+  },
+  "auto_record_every_n_turns": {
+    "description": "每 N 轮自动总结",
+    "type": "int",
+    "hint": "仅在「兜底模式」选 every_n_turns 时生效。每攒够 N 轮 user/assistant 对话，自动用 /memory summarize 那套流程把这 N 轮提炼成长期记忆。推荐 15-30。模型自己主动 record_memory 时计数器会清零，避免重复。",
+    "default": 20
   },
   "auto_record_use_judge": {
     "description": "自动记录走 LLM 复核",
     "type": "bool",
-    "hint": "开启时自动记录会再调一次 LLM 判断「这值得记吗」。关闭可省 1 次 LLM 调用，代价是误记率会略升。仅在「自动记录兜底」开启时生效。",
+    "hint": "仅在「兜底模式」选 per_turn 时生效。开启时每轮自动记录前再调一次 LLM 判断「这值得记吗」。关闭可省 1 次 LLM 调用，代价是误记率会略升。",
     "default": true
   },
   "advanced_mode": {
@@ -142,15 +155,26 @@
   "auto_record_min_chars": {
     "description": "自动记录最少字符数",
     "type": "int",
-    "hint": "用户消息少于此长度则跳过自动记录判断",
-    "default": 30,
+    "hint": "用户消息少于此长度则跳过自动记录判断。设高一些可避免闲聊式短消息被记下来。",
+    "default": 60,
     "condition": { "advanced_mode": true }
   },
   "auto_record_skip_patterns": {
     "description": "自动记录跳过模式",
     "type": "list",
-    "hint": "正则表达式列表，匹配的消息不会触发自动记录。例如命令、简单应答等。留空使用默认规则。",
-    "default": ["^/", "^[!！?？.。哈嗯啊嘿嘻噢哦呃唔]+$", "天气|weather", "^好的?$|^行$|^可以$|^ok$|^OK$"],
+    "hint": "正则表达式列表，匹配的消息不会触发自动记录。例如命令、寒暄、简单应答等。留空使用默认规则。",
+    "default": [
+      "^/",
+      "^[!！?？.。哈嗯啊嘿嘻噢哦呃唔～~…]+$",
+      "天气|weather",
+      "^好的?$|^行$|^可以$|^ok$|^OK$|^好嘞$|^嗯嗯$|^是的$|^对$|^对啊$|^是$",
+      "^晚安$|^早安$|^午安$|^早$|^晚啦?$|^bye$|^88$|^拜拜$|^再见$",
+      "^你好$|^哈喽$|^hi$|^hello$|^在吗$|^在不在$",
+      "^谢谢$|^谢啦$|^thx$|^thanks$|^thank you$",
+      "^笑死$|^笑死我了?$|^草$|^哈哈+$|^呵呵+$|^嘿嘿+$|^嘻嘻+$",
+      "^\\.{3,}$|^…+$",
+      "^[\\u4e00-\\u9fff]$"
+    ],
     "condition": { "advanced_mode": true }
   },
   "disabled_sessions": {
