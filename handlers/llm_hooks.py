@@ -682,7 +682,7 @@ class MemoryHooksMixin:
             return
 
         try:
-            history = await self._get_conversation_history(event)  # type: ignore[attr-defined]
+            history, _debug_info = await self._get_conversation_history(event)  # type: ignore[attr-defined]
         except Exception as e:
             logger.debug("[memory] auto-summary history fetch failed: %s", e)
             return
