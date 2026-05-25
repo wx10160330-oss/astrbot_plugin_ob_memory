@@ -22,11 +22,11 @@ so the LLM judgement call doesn't add latency to the user-facing reply.
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import re
 from typing import TYPE_CHECKING
 
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
@@ -40,7 +40,11 @@ if TYPE_CHECKING:
     from ..main import MemoryPlugin
 
 
-logger = logging.getLogger("astrbot_plugin_ob_memory.hooks")
+# Use AstrBot's logger so messages route through the framework's log
+# pipeline (visible in the dashboard log panel and standard stdout).
+# A stdlib ``logging.getLogger("astrbot_plugin_ob_memory.hooks")``
+# wouldn't reach the dashboard because AstrBot's handlers are bound to
+# the "astrbot" logger only.
 
 
 # ---------------------------------------------------------------------------
