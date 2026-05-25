@@ -484,8 +484,10 @@ class MemoryCommandsMixin:
                 n_threshold = int(cfg.get("auto_record_every_n_turns", 20))
             except (TypeError, ValueError):
                 n_threshold = 20
-            counters = getattr(self, "_auto_record_turn_counters", {}) or {}
-            current = counters.get(sid, 0)
+            try:
+                current = await self.manager.get_auto_record_counter(sid)  # type: ignore[union-attr]
+            except Exception:
+                current = 0
             remaining = max(0, n_threshold - current)
             auto_record_line = (
                 f"兜底自动记录: every_n_turns {current}/{n_threshold}"

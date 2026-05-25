@@ -677,8 +677,10 @@ async def test_every_n_turns_counter_increments_until_threshold(tmp_path: Path):
             await asyncio.sleep(0.05)
 
         obj.writer.hold_diary.assert_not_called()
-        counters = obj._get_auto_record_counters()
-        assert counters["qq:GroupMessage:12345"] == 2
+        assert (
+            await obj.manager.get_auto_record_counter("qq:GroupMessage:12345")
+            == 2
+        )
     finally:
         await db.close()
 
@@ -750,8 +752,10 @@ async def test_every_n_turns_triggers_summary_at_threshold(tmp_path: Path):
         assert "入职" in text
 
         # Counter should be reset to 0 after firing.
-        counters = obj._get_auto_record_counters()
-        assert counters["qq:GroupMessage:12345"] == 0
+        assert (
+            await obj.manager.get_auto_record_counter("qq:GroupMessage:12345")
+            == 0
+        )
     finally:
         await db.close()
 
@@ -782,8 +786,10 @@ async def test_every_n_turns_skips_turn_when_model_used_tool(tmp_path: Path):
             )
             await asyncio.sleep(0.01)
 
-        counters = obj._get_auto_record_counters()
-        assert counters["qq:GroupMessage:12345"] == 2
+        assert (
+            await obj.manager.get_auto_record_counter("qq:GroupMessage:12345")
+            == 2
+        )
 
         # Now a turn where the model called record_memory — counter must
         # stay at 2 (this turn isn't counted, but earlier progress is kept).
@@ -795,7 +801,10 @@ async def test_every_n_turns_skips_turn_when_model_used_tool(tmp_path: Path):
             ),
         )
         await asyncio.sleep(0.01)
-        assert counters["qq:GroupMessage:12345"] == 2
+        assert (
+            await obj.manager.get_auto_record_counter("qq:GroupMessage:12345")
+            == 2
+        )
 
         # writer.hold_diary must NOT have been called via the skip path.
         obj.writer.hold_diary.assert_not_called()

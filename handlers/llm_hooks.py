@@ -553,8 +553,7 @@ class MemoryHooksMixin:
             for tool_name in ("record_memory", "record_feel", "record_diary")
         ):
             if mode == "every_n_turns":
-                counters = self._get_auto_record_counters()
-                current = counters.get(session_id, 0)
+                current = await self._get_persisted_counter(session_id)
                 try:
                     n_threshold = int(
                         cfg.get(
@@ -603,10 +602,8 @@ class MemoryHooksMixin:
             if n <= 0:
                 return
 
-            counters = self._get_auto_record_counters()
-            counter = counters.get(session_id, 0) + 1
+            counter = await self._bump_persisted_counter(session_id)
             if counter < n:
-                counters[session_id] = counter
                 logger.info(
                     "[memory] every_n_turns counter session=%s %d/%d",
                     session_id, counter, n,
@@ -614,7 +611,7 @@ class MemoryHooksMixin:
                 return
 
             # Threshold reached — reset and trigger summary in background.
-            counters[session_id] = 0
+            await self._reset_persisted_counter(session_id)
             logger.info(
                 "[memory] every_n_turns threshold reached session=%s %d/%d — triggering summary",
                 session_id, counter, n,
@@ -676,18 +673,44 @@ class MemoryHooksMixin:
             return
         req.system_prompt = (existing + "\n\n" + persona).strip() if existing else persona
 
-    def _get_auto_record_counters(self: MemoryPlugin) -> dict[str, int]:
-        """Lazy-init a per-session turn counter dict on the plugin instance.
+    async def _get_persisted_counter(self: MemoryPlugin, session_id: str) -> int:
+        """Read the ``every_n_turns`` counter from SQLite.
 
-        State lives in process memory only; counters reset when AstrBot
-        restarts. That's intentional — we don't want to persist a knob
-        whose semantics are 'how many turns since last summary'.
+        Persisted in ``session_state`` (see schema v2) so progress is
+        preserved across plugin / AstrBot restarts. Returns 0 on any
+        manager-level error so a transient DB hiccup just behaves like
+        "fresh session" rather than crashing the request hook.
         """
-        counters = getattr(self, "_auto_record_turn_counters", None)
-        if counters is None:
-            counters = {}
-            self._auto_record_turn_counters = counters  # type: ignore[attr-defined]
-        return counters
+        if self.manager is None:
+            return 0
+        try:
+            return await self.manager.get_auto_record_counter(session_id)
+        except Exception as e:
+            logger.debug("[memory] persisted counter read failed: %s", e)
+            return 0
+
+    async def _bump_persisted_counter(
+        self: MemoryPlugin, session_id: str
+    ) -> int:
+        """Atomically increment the persisted counter and return the new value."""
+        if self.manager is None:
+            return 0
+        try:
+            return await self.manager.bump_auto_record_counter(session_id)
+        except Exception as e:
+            logger.debug("[memory] persisted counter bump failed: %s", e)
+            return 0
+
+    async def _reset_persisted_counter(
+        self: MemoryPlugin, session_id: str
+    ) -> None:
+        """Reset the persisted counter to 0 (called after a summary fires)."""
+        if self.manager is None:
+            return
+        try:
+            await self.manager.set_auto_record_counter(session_id, 0)
+        except Exception as e:
+            logger.debug("[memory] persisted counter reset failed: %s", e)
 
     async def _auto_summary_task(
         self: MemoryPlugin,

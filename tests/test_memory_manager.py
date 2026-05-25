@@ -472,3 +472,71 @@ async def test_time_ripple_isolates_sessions(tmp_path: Path):
         assert b_n.activation_count == 0.0
     finally:
         await db.close()
+
+
+# ===========================================================================
+# Persistent every_n_turns counter (schema v2 session_state)
+# ===========================================================================
+@pytest.mark.asyncio
+async def test_auto_record_counter_defaults_to_zero(tmp_path: Path):
+    """An unseen session reads back 0 — no row, no error."""
+    db, mgr = await _open_manager(tmp_path)
+    try:
+        assert await mgr.get_auto_record_counter("fresh:session") == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_record_counter_set_and_get(tmp_path: Path):
+    db, mgr = await _open_manager(tmp_path)
+    try:
+        await mgr.set_auto_record_counter("qq:Group:1", 7)
+        assert await mgr.get_auto_record_counter("qq:Group:1") == 7
+
+        # Updating writes through (no duplicate row, ON CONFLICT UPDATE).
+        await mgr.set_auto_record_counter("qq:Group:1", 12)
+        assert await mgr.get_auto_record_counter("qq:Group:1") == 12
+
+        # Sessions are isolated.
+        assert await mgr.get_auto_record_counter("qq:Group:2") == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_record_counter_bump(tmp_path: Path):
+    db, mgr = await _open_manager(tmp_path)
+    try:
+        assert await mgr.bump_auto_record_counter("sid") == 1
+        assert await mgr.bump_auto_record_counter("sid") == 2
+        assert await mgr.bump_auto_record_counter("sid") == 3
+        assert await mgr.get_auto_record_counter("sid") == 3
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_record_counter_survives_reopen(tmp_path: Path):
+    """The whole point of schema v2: closing + reopening the db must
+    preserve the counter so a plugin / AstrBot restart doesn't zero out
+    the user's accumulated turns."""
+    db_path = tmp_path / "memory.db"
+
+    db1 = Database(db_path)
+    await db1.connect()
+    await apply_migrations(db1)
+    mgr1 = MemoryManager(db1)
+    await mgr1.set_auto_record_counter("sid", 5)
+    await mgr1.bump_auto_record_counter("sid")
+    await mgr1.bump_auto_record_counter("sid")
+    await db1.close()
+
+    db2 = Database(db_path)
+    await db2.connect()
+    await apply_migrations(db2)
+    mgr2 = MemoryManager(db2)
+    try:
+        assert await mgr2.get_auto_record_counter("sid") == 7
+    finally:
+        await db2.close()
