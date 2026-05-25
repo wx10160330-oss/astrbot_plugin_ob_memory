@@ -657,6 +657,144 @@ async def test_auto_record_does_not_block(tmp_path: Path):
 
 
 @ASYNCIO
+async def test_every_n_turns_counter_increments_until_threshold(tmp_path: Path):
+    """First N-1 turns just bump the counter, no summary fires."""
+    db, obj = await _open(tmp_path)
+    try:
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = MagicMock()
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 3,
+        }
+
+        # First 2 turns: counter goes 1, 2 — no summary call yet.
+        for _ in range(2):
+            event = FakeEvent(message_str="something to say")
+            response = FakeLLMResponse(completion_text="reply text")
+            await obj.memory_on_llm_response(event, response)
+            await asyncio.sleep(0.05)
+
+        obj.writer.hold_diary.assert_not_called()
+        counters = obj._get_auto_record_counters()
+        assert counters["qq:GroupMessage:12345"] == 2
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_every_n_turns_triggers_summary_at_threshold(tmp_path: Path):
+    """N-th turn must invoke hold_diary with the last N user/assistant pairs.
+
+    Regression for the ``_get_conversation_history`` tuple-unpacking bug:
+    the helper returns ``(history, debug_info)`` and the auto-summary path
+    must unpack both, otherwise ``_extract_pairs`` iterates over a 2-tuple
+    and produces no pairs, silently dropping the summary.
+    """
+    db, obj = await _open(tmp_path)
+    try:
+        recorded_args: list[tuple[str, str]] = []
+
+        async def fake_hold_diary(session_id, text):
+            recorded_args.append((session_id, text))
+            return MagicMock(entries=[], created=1, merged=0, failed=0)
+
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = fake_hold_diary
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 2,
+        }
+
+        # Stub _get_conversation_history on the instance — it normally lives
+        # on CommandsMixin which the test FakeAssembled doesn't include.
+        async def fake_history(event):
+            return (
+                [
+                    {"role": "user", "content": "今天面试拿到 offer"},
+                    {"role": "assistant", "content": "太棒了，恭喜你"},
+                    {"role": "user", "content": "下周一就入职"},
+                    {"role": "assistant", "content": "记住啦"},
+                ],
+                "test history",
+            )
+
+        obj._get_conversation_history = fake_history  # type: ignore[attr-defined]
+
+        # Turn 1: counter goes to 1, no summary.
+        await obj.memory_on_llm_response(
+            FakeEvent(message_str="今天面试拿到 offer"),
+            FakeLLMResponse(completion_text="太棒了，恭喜你"),
+        )
+        await asyncio.sleep(0.05)
+        assert recorded_args == []
+
+        # Turn 2: counter hits 2 = threshold, summary fires.
+        await obj.memory_on_llm_response(
+            FakeEvent(message_str="下周一就入职"),
+            FakeLLMResponse(completion_text="记住啦"),
+        )
+        # background task — wait for it.
+        for _ in range(20):
+            if recorded_args:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(recorded_args) == 1
+        session_id, text = recorded_args[0]
+        assert session_id == "qq:GroupMessage:12345"
+        # The summary text should contain content from both pairs.
+        assert "offer" in text
+        assert "入职" in text
+
+        # Counter should be reset to 0 after firing.
+        counters = obj._get_auto_record_counters()
+        assert counters["qq:GroupMessage:12345"] == 0
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_every_n_turns_resets_counter_when_model_used_tool(tmp_path: Path):
+    """Model-invoked record_memory zeroes the counter to avoid double-recording."""
+    db, obj = await _open(tmp_path)
+    try:
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = MagicMock()
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 5,
+        }
+
+        # Bump the counter twice.
+        for _ in range(2):
+            await obj.memory_on_llm_response(
+                FakeEvent(message_str="something"),
+                FakeLLMResponse(completion_text="ok"),
+            )
+            await asyncio.sleep(0.01)
+
+        counters = obj._get_auto_record_counters()
+        assert counters["qq:GroupMessage:12345"] == 2
+
+        # Now a turn where the model called record_memory — counter resets.
+        await obj.memory_on_llm_response(
+            FakeEvent(message_str="something memorable"),
+            FakeLLMResponse(
+                completion_text="recorded",
+                tools_call_name=["record_memory"],
+            ),
+        )
+        await asyncio.sleep(0.01)
+        assert "qq:GroupMessage:12345" not in counters
+    finally:
+        await db.close()
+
+
+@ASYNCIO
 async def test_auto_record_swallows_judge_exception(tmp_path: Path):
     db, obj = await _open(tmp_path)
     try:
