@@ -76,8 +76,26 @@ CREATE TABLE IF NOT EXISTS schema_version (
 Migration = tuple[str, ...] | Callable[[Database], Awaitable[None]]
 
 
+# ---------------------------------------------------------------------------
+# Migration v2: persistent per-session state.
+# Currently only stores the ``every_n_turns`` auto-record counter so it
+# survives plugin / AstrBot restarts. Adding more per-session knobs in the
+# future is a straightforward ALTER TABLE.
+# ---------------------------------------------------------------------------
+SCHEMA_V2: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS session_state (
+        session_id           TEXT PRIMARY KEY,
+        auto_record_counter  INTEGER NOT NULL DEFAULT 0,
+        updated_at           REAL NOT NULL
+    )
+    """,
+)
+
+
 MIGRATIONS: dict[int, tuple[str, Migration]] = {
     1: ("initial schema: memories + embeddings", SCHEMA_V1),
+    2: ("session_state: persistent every_n_turns counter", SCHEMA_V2),
 }
 
 

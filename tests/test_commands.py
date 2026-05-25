@@ -476,8 +476,9 @@ async def test_stats_shows_every_n_turns_counter(tmp_path: Path):
             "auto_record_mode": "every_n_turns",
             "auto_record_every_n_turns": 30,
         }
-        # Simulate counter at 7/30 by populating the dict the hook would use.
-        obj._auto_record_turn_counters = {"qq:GroupMessage:12345": 7}
+        # Seed the persisted counter at 7 — `/memory stats` reads from
+        # SQLite via the manager (schema v2 ``session_state`` table).
+        await obj.manager.set_auto_record_counter("qq:GroupMessage:12345", 7)
 
         results = await _collect(obj.cmd_memory_stats(FakeEvent()))
         out = results[0].text

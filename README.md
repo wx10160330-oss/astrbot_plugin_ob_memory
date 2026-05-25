@@ -59,7 +59,7 @@
 | `memory_persona_text` | （留空） | 自定义上一项注入的内容。留空 = 用插件内置默认（YAML，介绍长期记忆 + 怎么记 / 怎么用）。要换语气、加例外、换风格直接在文本框里改，保存后下次对话即生效 |
 | `auto_record_enabled` | `true` | 模型没主动调 `record_memory` 时，插件是否启发式 / 周期性兜底把对话存为记忆 |
 | `auto_record_mode` | `every_n_turns` | 兜底模式：`every_n_turns`（推荐）每攒够 N 轮对话整体总结一次 / `per_turn` 每轮单独判定 / `disabled` 完全关掉兜底只信模型自己 `record_memory` |
-| `auto_record_every_n_turns` | `20` | `every_n_turns` 模式下每 N 轮触发一次自动总结。模型自己主动 `record_memory` 时计数器会清零，避免重复。推荐 15-30 |
+| `auto_record_every_n_turns` | `20` | `every_n_turns` 模式下每 N 轮触发一次自动总结。计数器持久化在 `memory.db` 的 `session_state` 表里，插件重启 / AstrBot 重启 / 改配置都不会清零；模型自己主动 `record_memory` 那一轮不计数（但已攒进度保留），避免重复。推荐 15-30 |
 | `auto_record_use_judge` | `true` | 仅 `per_turn` 模式生效：自动记录是否再调一次 LLM 判定「这值得记吗」。关闭可省 1 次 LLM 调用 |
 | `dashboard_enabled` | `true` | 是否启用浏览器可视化管理面板 |
 | `dashboard_host` | `127.0.0.1` | 仪表盘监听地址：`127.0.0.1` 仅本机 / `0.0.0.0` 局域网可访问 |

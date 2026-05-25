@@ -511,3 +511,61 @@ class MemoryManager:
             (session_id, source_id, low, high),
         )
         return min(int(row["n"] if row else 0), max_buckets)
+
+    # ------------------------------------------------------------------
+    # Per-session state: persistent every_n_turns counter.
+    #
+    # Stored in the ``session_state`` table so progress survives plugin /
+    # AstrBot restarts. Without persistence the counter resets to 0 on
+    # every reload, which makes high-N thresholds (20/30+) effectively
+    # unreachable when users tweak config or restart the plugin.
+    # ------------------------------------------------------------------
+    async def get_auto_record_counter(self, session_id: str) -> int:
+        """Return the persisted ``every_n_turns`` counter for a session.
+
+        Returns 0 if the session has no row yet — callers can treat this
+        as "fresh session, start counting from 0".
+        """
+        if not session_id:
+            return 0
+        row = await self.db.fetch_one(
+            "SELECT auto_record_counter FROM session_state WHERE session_id = ?",
+            (session_id,),
+        )
+        if row is None:
+            return 0
+        return int(row["auto_record_counter"])
+
+    async def set_auto_record_counter(self, session_id: str, value: int) -> None:
+        """Persist ``value`` as the new counter for ``session_id``.
+
+        Uses ``INSERT … ON CONFLICT`` so the caller does not need to
+        branch on first-vs-subsequent writes.
+        """
+        if not session_id:
+            return
+        await self.db.execute(
+            """
+            INSERT INTO session_state (session_id, auto_record_counter, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                auto_record_counter = excluded.auto_record_counter,
+                updated_at = excluded.updated_at
+            """,
+            (session_id, int(value), time.time()),
+        )
+
+    async def bump_auto_record_counter(self, session_id: str) -> int:
+        """Increment the counter by 1 (creating the row if needed) and
+        return the new value.
+
+        Implemented as read-then-write inside the manager rather than a
+        SQL-level ``UPDATE … RETURNING`` because the latter requires
+        SQLite 3.35+ which is not guaranteed everywhere AstrBot runs.
+        """
+        if not session_id:
+            return 0
+        current = await self.get_auto_record_counter(session_id)
+        new_value = current + 1
+        await self.set_auto_record_counter(session_id, new_value)
+        return new_value
