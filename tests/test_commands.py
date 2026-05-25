@@ -465,6 +465,53 @@ async def test_stats_returns_counts(tmp_path: Path):
         await db.close()
 
 
+@ASYNCIO
+async def test_stats_shows_every_n_turns_counter(tmp_path: Path):
+    """`/memory stats` must surface the current auto-record counter so users
+    can see how close they are to the next auto-summary without grepping logs."""
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 30,
+        }
+        # Simulate counter at 7/30 by populating the dict the hook would use.
+        obj._auto_record_turn_counters = {"qq:GroupMessage:12345": 7}
+
+        results = await _collect(obj.cmd_memory_stats(FakeEvent()))
+        out = results[0].text
+        assert "every_n_turns 7/30" in out
+        assert "还差 23 轮" in out
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_stats_shows_disabled_mode(tmp_path: Path):
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "disabled",
+        }
+        results = await _collect(obj.cmd_memory_stats(FakeEvent()))
+        assert "disabled" in results[0].text
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_stats_shows_master_toggle_off(tmp_path: Path):
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {"auto_record_enabled": False}
+        results = await _collect(obj.cmd_memory_stats(FakeEvent()))
+        assert "已关闭" in results[0].text
+    finally:
+        await db.close()
+
+
 # ===========================================================================
 # /memory import_astrbot
 # ===========================================================================

@@ -757,8 +757,13 @@ async def test_every_n_turns_triggers_summary_at_threshold(tmp_path: Path):
 
 
 @ASYNCIO
-async def test_every_n_turns_resets_counter_when_model_used_tool(tmp_path: Path):
-    """Model-invoked record_memory zeroes the counter to avoid double-recording."""
+async def test_every_n_turns_skips_turn_when_model_used_tool(tmp_path: Path):
+    """Model-invoked record_memory must NOT count toward the threshold (so we
+    don't re-summarise content the model already captured), but the previously
+    accumulated progress is preserved — earlier versions reset the counter to
+    0, which made N=10/15 effectively unreachable in chatty sessions where the
+    model autonomously records once every few turns.
+    """
     db, obj = await _open(tmp_path)
     try:
         obj.writer = MagicMock()
@@ -780,7 +785,8 @@ async def test_every_n_turns_resets_counter_when_model_used_tool(tmp_path: Path)
         counters = obj._get_auto_record_counters()
         assert counters["qq:GroupMessage:12345"] == 2
 
-        # Now a turn where the model called record_memory — counter resets.
+        # Now a turn where the model called record_memory — counter must
+        # stay at 2 (this turn isn't counted, but earlier progress is kept).
         await obj.memory_on_llm_response(
             FakeEvent(message_str="something memorable"),
             FakeLLMResponse(
@@ -789,7 +795,10 @@ async def test_every_n_turns_resets_counter_when_model_used_tool(tmp_path: Path)
             ),
         )
         await asyncio.sleep(0.01)
-        assert "qq:GroupMessage:12345" not in counters
+        assert counters["qq:GroupMessage:12345"] == 2
+
+        # writer.hold_diary must NOT have been called via the skip path.
+        obj.writer.hold_diary.assert_not_called()
     finally:
         await db.close()
 
