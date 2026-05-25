@@ -539,19 +539,35 @@ class MemoryHooksMixin:
 
         # Skip the auto-record path if the model already recorded memory
         # via its own tool calls this turn. In ``every_n_turns`` mode we
-        # also reset the counter so we don't double-record by summarising
-        # the same window immediately after.
+        # simply don't count this turn toward the threshold (so we don't
+        # re-summarise content the model already captured), but we keep
+        # the existing progress so the user-visible counter doesn't reset
+        # to 0 just because the model happened to record one turn.
         tools_called = list(getattr(response, "tools_call_name", []) or [])
         if any(
             tool_name in tools_called
             for tool_name in ("record_memory", "record_feel", "record_diary")
         ):
-            logger.debug(
-                "[memory] auto-record skipped: tools already called %s", tools_called
-            )
             if mode == "every_n_turns":
                 counters = self._get_auto_record_counters()
-                counters.pop(session_id, None)
+                current = counters.get(session_id, 0)
+                try:
+                    n_threshold = int(
+                        cfg.get(
+                            "auto_record_every_n_turns",
+                            DEFAULT_AUTO_RECORD_EVERY_N_TURNS,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    n_threshold = DEFAULT_AUTO_RECORD_EVERY_N_TURNS
+                logger.info(
+                    "[memory] every_n_turns counter session=%s %d/%d (turn not counted: model used %s)",
+                    session_id, current, n_threshold, tools_called,
+                )
+            else:
+                logger.debug(
+                    "[memory] auto-record skipped: tools already called %s", tools_called
+                )
             return
 
         # Need a non-empty user message and assistant reply.
@@ -587,7 +603,7 @@ class MemoryHooksMixin:
             counter = counters.get(session_id, 0) + 1
             if counter < n:
                 counters[session_id] = counter
-                logger.debug(
+                logger.info(
                     "[memory] every_n_turns counter session=%s %d/%d",
                     session_id, counter, n,
                 )
@@ -595,6 +611,10 @@ class MemoryHooksMixin:
 
             # Threshold reached — reset and trigger summary in background.
             counters[session_id] = 0
+            logger.info(
+                "[memory] every_n_turns threshold reached session=%s %d/%d — triggering summary",
+                session_id, counter, n,
+            )
             asyncio.create_task(self._auto_summary_task(event, session_id, n))
             return
 

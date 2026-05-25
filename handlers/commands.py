@@ -467,6 +467,33 @@ class MemoryCommandsMixin:
                 embedding_status = "未知"
 
         total = sum(counts.values())
+
+        # Auto-record mode + counter snapshot (every_n_turns progress).
+        raw_cfg = getattr(self, "config", None)
+        cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+        auto_record_enabled = bool(cfg.get("auto_record_enabled", True))
+        mode = str(cfg.get("auto_record_mode", "every_n_turns")).lower()
+        if not auto_record_enabled:
+            auto_record_line = "兜底自动记录: 已关闭"
+        elif mode == "disabled":
+            auto_record_line = "兜底自动记录: disabled（只靠模型主动）"
+        elif mode == "per_turn":
+            auto_record_line = "兜底自动记录: per_turn（每轮判断）"
+        elif mode == "every_n_turns":
+            try:
+                n_threshold = int(cfg.get("auto_record_every_n_turns", 20))
+            except (TypeError, ValueError):
+                n_threshold = 20
+            counters = getattr(self, "_auto_record_turn_counters", {}) or {}
+            current = counters.get(sid, 0)
+            remaining = max(0, n_threshold - current)
+            auto_record_line = (
+                f"兜底自动记录: every_n_turns {current}/{n_threshold}"
+                f"（距下次自动总结还差 {remaining} 轮）"
+            )
+        else:
+            auto_record_line = f"兜底自动记录: 未知模式 {mode!r}"
+
         yield event.plain_result(
             f"=== 记忆系统状态 ({sid}) ===\n"
             f"动态: {counts.get('dynamic', 0)}\n"
@@ -475,7 +502,8 @@ class MemoryCommandsMixin:
             f"已归档: {counts.get('archived', 0)}\n"
             f"合计: {total}\n"
             f"衰减引擎: {decay_status}\n"
-            f"向量检索: {embedding_status}"
+            f"向量检索: {embedding_status}\n"
+            f"{auto_record_line}"
         )
 
     # ------------------------------------------------------------------
