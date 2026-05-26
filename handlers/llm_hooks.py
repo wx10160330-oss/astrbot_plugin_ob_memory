@@ -119,6 +119,58 @@ async def _resolve_session_via_plugin(plugin, event: AstrMessageEvent) -> str:
         return _session_id(event)
 
 
+async def _resolve_counter_key_via_plugin(plugin, event: AstrMessageEvent) -> str:
+    """Resolve the ``every_n_turns`` counter key.
+
+    Per-conversation (``conv:{cid}``) when AstrBot has a cid, otherwise
+    falls back to ``origin:{umo}``. Decoupled from the memory
+    session_id so users on ``scope_mode = user`` still get a fresh
+    counter each time they open a new conversation window.
+
+    Tests that don't bind a resolver fall through to the event's
+    unified origin — same behaviour as before for legacy fixtures.
+    """
+    resolver = getattr(plugin, "session_resolver", None)
+    if resolver is None or not hasattr(resolver, "resolve_counter_key"):
+        return _session_id(event)
+    try:
+        return await resolver.resolve_counter_key(event)
+    except Exception:
+        return _session_id(event)
+
+
+def _get_recent_pairs_buffer(plugin, session_id: str):
+    """Return (and lazily create) the rolling ``(user, assistant)`` pair
+    buffer for ``session_id``.
+
+    Lives in memory on the plugin instance — lost across restarts,
+    which is fine: the persistent counter still survives, and after a
+    restart we just need to attend a few more turns to refill the
+    window. Each session keeps the last ~64 pairs so even very large
+    ``auto_record_every_n_turns`` settings have something to summarise.
+
+    This is the fallback for adapters (notably group-chat adapters)
+    where ``conversation_manager`` doesn't expose a usable cid and the
+    standard history-fetch path returns empty.
+    """
+    from collections import deque
+
+    buffers = getattr(plugin, "_recent_pairs", None)
+    if buffers is None:
+        buffers = {}
+        try:
+            plugin._recent_pairs = buffers
+        except Exception:
+            # Stub objects in tests may forbid attribute creation; just
+            # build a throw-away buffer in that case.
+            return deque(maxlen=64)
+    buf = buffers.get(session_id)
+    if buf is None:
+        buf = deque(maxlen=64)
+        buffers[session_id] = buf
+    return buf
+
+
 def _format_hit_for_injection(hit: SearchHit, *, snippet: str = "") -> str:
     """Render a single hit as one line for the injected memory block.
 
@@ -541,6 +593,12 @@ class MemoryHooksMixin:
         if self._is_session_disabled(session_id):
             return
 
+        # Counter key is intentionally distinct from ``session_id`` so a
+        # ``scope_mode = user`` setup (memory shared across windows)
+        # still gets a per-window summary cadence. See
+        # ``SessionResolver.resolve_counter_key`` for the policy.
+        counter_key = await _resolve_counter_key_via_plugin(self, event)
+
         # Skip the auto-record path if the model already recorded memory
         # via its own tool calls this turn. In ``every_n_turns`` mode we
         # simply don't count this turn toward the threshold (so we don't
@@ -553,7 +611,7 @@ class MemoryHooksMixin:
             for tool_name in ("record_memory", "record_feel", "record_diary")
         ):
             if mode == "every_n_turns":
-                current = await self._get_persisted_counter(session_id)
+                current = await self._get_persisted_counter(counter_key)
                 try:
                     n_threshold = int(
                         cfg.get(
@@ -564,8 +622,8 @@ class MemoryHooksMixin:
                 except (TypeError, ValueError):
                     n_threshold = DEFAULT_AUTO_RECORD_EVERY_N_TURNS
                 logger.info(
-                    "[memory] every_n_turns counter session=%s %d/%d (turn not counted: model used %s)",
-                    session_id, current, n_threshold, tools_called,
+                    "[memory] every_n_turns counter counter_key=%s session=%s %d/%d (turn not counted: model used %s)",
+                    counter_key, session_id, current, n_threshold, tools_called,
                 )
             else:
                 logger.debug(
@@ -589,6 +647,18 @@ class MemoryHooksMixin:
             )
             return
 
+        # Record this turn into the rolling buffer for fallback summarisation
+        # when ``conversation_manager`` can't supply history (e.g. some
+        # group-chat adapters). Keyed by the *memory* session_id so the
+        # buffer follows memory scope — the summary content goes into the
+        # same pool as everything else.
+        try:
+            _get_recent_pairs_buffer(self, session_id).append(
+                (user_msg, assistant_msg)
+            )
+        except Exception as e:
+            logger.debug("[memory] recent-pairs buffer append failed: %s", e)
+
         if mode == "every_n_turns":
             try:
                 n = int(
@@ -602,19 +672,19 @@ class MemoryHooksMixin:
             if n <= 0:
                 return
 
-            counter = await self._bump_persisted_counter(session_id)
+            counter = await self._bump_persisted_counter(counter_key)
             if counter < n:
                 logger.info(
-                    "[memory] every_n_turns counter session=%s %d/%d",
-                    session_id, counter, n,
+                    "[memory] every_n_turns counter counter_key=%s session=%s %d/%d",
+                    counter_key, session_id, counter, n,
                 )
                 return
 
             # Threshold reached — reset and trigger summary in background.
-            await self._reset_persisted_counter(session_id)
+            await self._reset_persisted_counter(counter_key)
             logger.info(
-                "[memory] every_n_turns threshold reached session=%s %d/%d — triggering summary",
-                session_id, counter, n,
+                "[memory] every_n_turns threshold reached counter_key=%s session=%s %d/%d — triggering summary",
+                counter_key, session_id, counter, n,
             )
             asyncio.create_task(self._auto_summary_task(event, session_id, n))
             return
@@ -721,6 +791,20 @@ class MemoryHooksMixin:
         """Background body for ``every_n_turns`` mode: summarise last N
         user/assistant rounds via the existing ``hold_diary`` path.
 
+        Resolution order for the pairs to summarise:
+
+        1. ``conversation_manager`` history — preferred, includes
+           context the model itself never echoed back (system prompts,
+           tool calls, etc, get stripped by :func:`_extract_pairs`).
+           Works on private chats and most adapters where AstrBot
+           tracks a cid.
+        2. In-memory rolling buffer (:func:`_get_recent_pairs_buffer`)
+           populated turn-by-turn in :meth:`_maybe_schedule_auto_record`.
+           This is the **group-chat-friendly fallback**: even when
+           ``conversation_manager`` returns no history for this
+           session, we still have the recent ``(user, assistant)``
+           pairs sitting in plugin memory.
+
         Reuses :func:`_extract_pairs` from the commands module so we
         tolerate the same heterogeneous history shapes the
         ``/memory summarize`` command supports.
@@ -728,19 +812,56 @@ class MemoryHooksMixin:
         if self.writer is None:
             return
 
+        pairs: list[tuple[str, str]] = []
+        history_source = "none"
+
+        # Path 1: AstrBot conversation history
         try:
-            history, _debug_info = await self._get_conversation_history(event)  # type: ignore[attr-defined]
+            history, debug_info = await self._get_conversation_history(event)  # type: ignore[attr-defined]
         except Exception as e:
-            logger.debug("[memory] auto-summary history fetch failed: %s", e)
-            return
+            logger.info(
+                "[memory] auto-summary history fetch failed for session=%s: %s",
+                session_id, e,
+            )
+            history = []
+            debug_info = f"fetch raised: {e}"
 
-        if not history:
-            logger.debug("[memory] auto-summary skipped: empty history")
-            return
+        if history:
+            extracted = _extract_pairs(history)
+            if extracted:
+                pairs = extracted
+                history_source = "conversation_manager"
+            else:
+                logger.info(
+                    "[memory] auto-summary: conversation_manager returned %d "
+                    "messages but no user/assistant pairs (debug=%s)",
+                    len(history), debug_info,
+                )
+        else:
+            logger.info(
+                "[memory] auto-summary: conversation_manager empty (debug=%s) "
+                "\u2014 trying in-memory buffer fallback",
+                debug_info,
+            )
 
-        pairs = _extract_pairs(history)
+        # Path 2: rolling buffer fallback (group-chat-friendly)
         if not pairs:
-            logger.debug("[memory] auto-summary skipped: no user/assistant pairs in history")
+            try:
+                buf = _get_recent_pairs_buffer(self, session_id)
+                if buf:
+                    pairs = list(buf)
+                    history_source = "rolling_buffer"
+            except Exception as e:
+                logger.info(
+                    "[memory] auto-summary buffer fallback failed: %s", e
+                )
+
+        if not pairs:
+            logger.info(
+                "[memory] auto-summary skipped session=%s: no pairs available "
+                "from any source",
+                session_id,
+            )
             return
 
         # Take the most recent N pairs only.
@@ -754,10 +875,18 @@ class MemoryHooksMixin:
         if len(text) > 8000:
             text = text[-8000:]
 
+        logger.info(
+            "[memory] auto-summary firing session=%s pairs=%d source=%s",
+            session_id, len(pairs), history_source,
+        )
+
         try:
             result = await self.writer.hold_diary(session_id, text)
         except Exception as e:
-            logger.debug("[memory] auto-summary hold_diary raised: %s", e)
+            logger.warning(
+                "[memory] auto-summary hold_diary raised for session=%s: %s",
+                session_id, e,
+            )
             return
 
         entry_ids = [h.bucket_id for h in result.entries]

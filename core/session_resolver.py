@@ -168,3 +168,39 @@ class SessionResolver:
         except Exception as e:
             logger.warning("session resolve crashed; using origin fallback: %s", e)
             return _origin_of(event)
+
+    async def resolve_counter_key(self, event: AstrMessageEvent) -> str:
+        """Return the storage key used for the ``every_n_turns`` counter.
+
+        Decoupled from :meth:`resolve` on purpose. The memory pool may
+        be shared across conversations (``scope_mode = user``) but the
+        user-facing summary cadence should still feel "per-window":
+
+        - User opens a fresh AstrBot conversation (``/new``) → fresh
+          counter, fresh summary cycle.
+        - Group chat and private chat → distinct counters even if both
+          write into the same ``user:`` memory pool.
+
+        The key picks the most granular id that AstrBot can give us:
+
+        1. ``conv:{cid}`` — when ``conversation_manager`` has a current
+           conversation id for this event's UMO. This is the common
+           path for private chats.
+        2. ``origin:{umo}`` — fallback for adapters / chat types that
+           don't expose a cid (e.g. some group adapters). Sharing one
+           counter across the whole origin is still better than
+           sharing one across the whole user, because at least private
+           vs. group are kept apart.
+
+        Always returns a non-empty string.
+        """
+        try:
+            cid = await self._conversation_id(event)
+            if cid:
+                return f"conv:{cid}"
+            return f"origin:{_origin_of(event)}"
+        except Exception as e:
+            logger.warning(
+                "counter-key resolve crashed; using origin fallback: %s", e
+            )
+            return f"origin:{_origin_of(event)}"

@@ -59,7 +59,7 @@
 | `memory_persona_text` | （留空） | 自定义上一项注入的内容。留空 = 用插件内置默认（YAML，介绍长期记忆 + 怎么记 / 怎么用）。要换语气、加例外、换风格直接在文本框里改，保存后下次对话即生效 |
 | `auto_record_enabled` | `true` | 模型没主动调 `record_memory` 时，插件是否启发式 / 周期性兜底把对话存为记忆 |
 | `auto_record_mode` | `every_n_turns` | 兜底模式：`every_n_turns`（推荐）每攒够 N 轮对话整体总结一次 / `per_turn` 每轮单独判定 / `disabled` 完全关掉兜底只信模型自己 `record_memory` |
-| `auto_record_every_n_turns` | `20` | `every_n_turns` 模式下每 N 轮触发一次自动总结。计数器持久化在 `memory.db` 的 `session_state` 表里，插件重启 / AstrBot 重启 / 改配置都不会清零；模型自己主动 `record_memory` 那一轮不计数（但已攒进度保留），避免重复。推荐 15-30 |
+| `auto_record_every_n_turns` | `20` | `every_n_turns` 模式下每 N 轮触发一次自动总结。计数器按**对话窗口（cid）独立累**——开新对话 = 从 0 重数，私聊群聊各自一份，跟 `scope_mode` 解耦。计数器持久化在 `memory.db` 的 `session_state` 表里，插件 / AstrBot 重启都不会清零；模型自己主动 `record_memory` 那一轮不计数（已攒进度保留）。推荐 15-30 |
 | `auto_record_use_judge` | `true` | 仅 `per_turn` 模式生效：自动记录是否再调一次 LLM 判定「这值得记吗」。关闭可省 1 次 LLM 调用 |
 | `dashboard_enabled` | `true` | 是否启用浏览器可视化管理面板 |
 | `dashboard_host` | `127.0.0.1` | 仪表盘监听地址：`127.0.0.1` 仅本机 / `0.0.0.0` 局域网可访问 |
@@ -180,6 +180,20 @@ feel:
 - `user`：同一个用户在哪聊都共用记忆
 - `origin`：群聊全员共用一份（同一个 QQ 群里所有人都能让 AI 想起群里发生过的事）
 
+### 🧮 自动总结计数器是怎么算的？（per-window）
+
+`every_n_turns` 那个 N 轮一次的总结计数器**始终按对话窗口（cid）单独累**，跟 `scope_mode` 无关：
+
+- 你**开新对话窗口** → 计数器从 0 开始（旧窗口的进度跟它无关）
+- **私聊**和**群聊** → 各自独立的计数器
+- 同一个群里的多次对话 → 各自独立
+
+这条规则跟 `scope_mode` **解耦**——比如你 `scope_mode = user`，私聊里聊了 7 轮、切到群聊，群聊的计数器是 0 起步（不会继承私聊那 7 轮的进度）；但记忆库还是共用的，群聊的 AI 能调用私聊聊过的事。
+
+> 即使 AstrBot 对某个适配器（比如某些群聊）不分配独立 cid，插件也会**按 origin 分开**计数（私聊一份、每个群一份），不会全部混到一起。
+
+`/memory stats` 那行 `every_n_turns X/N（… · 本对话）` 就是当前对话窗口的进度。
+
 ### 三种「沉底」的细微差别
 
 容易混的三个概念，一次讲清：
@@ -270,11 +284,14 @@ on_llm_request 钩子 ──┐
                                   │
               ┌───────────────────▼─────────────────────────────┐
               │  模型已主动 record_memory？                     │
-              │  ├─ 是 → 跳过（计数器清零）                    │
+              │  ├─ 是 → 这轮不计数（已攒进度保留）            │
               │  └─ 否 → 按 auto_record_mode 兜底：             │
               │       • every_n_turns: 计数+1，满 N 轮一次总结 │
               │       • per_turn:      启发式 + judge LLM       │
               │       • disabled:      不兜底                   │
+              │                                                 │
+              │  计数器键 = conv:{cid}（或 origin 兜底），跟    │
+              │  scope_mode 解耦：每个窗口独立从 0 累起。       │
               └───────────────────┬─────────────────────────────┘
                                   │
                        MemoryWriter.hold()       MemoryWriter.hold_diary()
