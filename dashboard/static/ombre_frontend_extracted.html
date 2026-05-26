@@ -1256,7 +1256,7 @@
             return!m.resolved&&!m.pinned&&!m.digested&&m.type!=='feel'&&m.type!=='archived'
           });
           else if(filterStatus==='dormant')list=list.filter(function(m){
-            return m.type==='archived'
+            return(m.type==='archived'||m.resolved)&&m.type!=='feel'
           });
           else if(filterStatus==='feel')list=list.filter(function(m){
             return m.type==='feel'
@@ -1285,7 +1285,7 @@
             }).length,a:memories.filter(function(m){
               return!m.resolved&&!m.pinned&&!m.digested&&m.type!=='feel'&&m.type!=='archived'
             }).length,ar:memories.filter(function(m){
-              return m.type==='archived'
+              return(m.type==='archived'||m.resolved)&&m.type!=='feel'
             }).length,f:memories.filter(function(m){
               return m.type==='feel'
             }).length,dg:memories.filter(function(m){
@@ -1387,7 +1387,7 @@
           }else{
             if(isDig)statusLabel='已隐藏';
             else if(m.pinned)statusLabel='核心准则';
-            else if(isArc)statusLabel='已沉底';
+            else if(isArc||m.resolved)statusLabel='已沉底';
             else statusLabel='活跃中'
           }var statusColor,statusBg;
           if(isDig){
