@@ -244,3 +244,97 @@ async def test_mode_change_takes_effect_on_next_call():
     plugin.config["scope_mode"] = "user"
     sid_user = await resolver.resolve(FakeEvent())
     assert sid_user == "user:user-A"
+
+
+# ---------------------------------------------------------------------------
+# resolve_counter_key — per-conversation cadence regardless of scope_mode
+# ---------------------------------------------------------------------------
+@ASYNCIO
+async def test_counter_key_uses_cid_when_available():
+    """A cid produces a ``conv:`` counter key whatever ``scope_mode`` is."""
+    cm = FakeConversationManager(mapping={"qq:Private:111": "cid-private"})
+    plugin = FakePlugin(scope_mode="user", context=FakeContext(cm))
+    resolver = SessionResolver(plugin)
+
+    key = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:Private:111")
+    )
+    assert key == "conv:cid-private"
+
+
+@ASYNCIO
+async def test_counter_key_falls_back_to_origin_when_no_cid():
+    """No cid (e.g. adapter that doesn't track group conversations)
+    → origin-scoped key, so private vs. group are still separate."""
+    cm = FakeConversationManager(mapping={"qq:GroupMessage:42": None})
+    plugin = FakePlugin(scope_mode="user", context=FakeContext(cm))
+    resolver = SessionResolver(plugin)
+
+    key = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:GroupMessage:42")
+    )
+    assert key == "origin:qq:GroupMessage:42"
+
+
+@ASYNCIO
+async def test_counter_key_falls_back_when_manager_crashes():
+    plugin = FakePlugin(
+        scope_mode="user",
+        context=FakeContext(CrashConversationManager()),
+    )
+    resolver = SessionResolver(plugin)
+    key = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:GroupMessage:99")
+    )
+    assert key == "origin:qq:GroupMessage:99"
+
+
+@ASYNCIO
+async def test_counter_key_distinct_per_cid_under_user_scope():
+    """Two different AstrBot conversations under the same QQ user must
+    get **different** counter keys even when ``scope_mode=user`` shares
+    their memory pool.
+    """
+    cm = FakeConversationManager()
+    plugin = FakePlugin(scope_mode="user", context=FakeContext(cm))
+    resolver = SessionResolver(plugin)
+
+    cm.mapping["qq:Private:111"] = "cid-window-1"
+    k1 = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:Private:111")
+    )
+
+    cm.mapping["qq:Private:111"] = "cid-window-2"
+    k2 = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:Private:111")
+    )
+
+    # Memory side: both events still resolve to ``user:user-A``.
+    mem1 = await resolver.resolve(
+        FakeEvent(unified_msg_origin="qq:Private:111", sender_id="user-A")
+    )
+    assert mem1 == "user:user-A"
+
+    # Counter side: two distinct keys, so each window has its own cadence.
+    assert k1 == "conv:cid-window-1"
+    assert k2 == "conv:cid-window-2"
+    assert k1 != k2
+
+
+@ASYNCIO
+async def test_counter_key_separates_private_vs_group_origin_fallback():
+    """When neither private nor group has a tracked cid (extreme case)
+    the origin fallback still keeps them apart — by origin string."""
+    cm = FakeConversationManager()  # no entries
+    plugin = FakePlugin(scope_mode="user", context=FakeContext(cm))
+    resolver = SessionResolver(plugin)
+
+    priv = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:Private:111")
+    )
+    grp = await resolver.resolve_counter_key(
+        FakeEvent(unified_msg_origin="qq:GroupMessage:777")
+    )
+    assert priv == "origin:qq:Private:111"
+    assert grp == "origin:qq:GroupMessage:777"
+    assert priv != grp

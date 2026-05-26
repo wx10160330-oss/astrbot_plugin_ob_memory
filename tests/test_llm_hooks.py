@@ -836,3 +836,68 @@ async def test_auto_record_swallows_judge_exception(tmp_path: Path):
         assert buckets == []  # no record landed; no crash either
     finally:
         await db.close()
+
+
+@ASYNCIO
+async def test_every_n_turns_falls_back_to_rolling_buffer_on_empty_history(
+    tmp_path: Path,
+):
+    """Group-chat-friendly fallback: when ``_get_conversation_history``
+    returns empty (e.g. adapter doesn't track group cids), the auto-summary
+    must still fire using the in-memory ``(user, assistant)`` buffer that
+    ``_maybe_schedule_auto_record`` populates each turn.
+
+    Regression for "群聊那边好像又没有按照计数器自动总结了" — when
+    ``conversation_manager`` had no history for the group, the previous
+    implementation silently dropped the summary at DEBUG level.
+    """
+    db, obj = await _open(tmp_path)
+    try:
+        recorded_args: list[tuple[str, str]] = []
+
+        async def fake_hold_diary(session_id, text):
+            recorded_args.append((session_id, text))
+            return MagicMock(entries=[], created=1, merged=0, failed=0)
+
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = fake_hold_diary
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 2,
+        }
+
+        # Simulate the group-chat case: history fetch returns empty.
+        async def empty_history(event):
+            return ([], "no cid for group adapter")
+
+        obj._get_conversation_history = empty_history  # type: ignore[attr-defined]
+
+        # Turn 1: bump counter to 1, fills buffer with the first pair.
+        await obj.memory_on_llm_response(
+            FakeEvent(message_str="群里有人在吗"),
+            FakeLLMResponse(completion_text="我在的"),
+        )
+        await asyncio.sleep(0.05)
+        assert recorded_args == []  # not yet at threshold
+
+        # Turn 2: hits threshold = 2, summary must fire from the buffer.
+        await obj.memory_on_llm_response(
+            FakeEvent(message_str="我今天去看了那个展览"),
+            FakeLLMResponse(completion_text="听起来很有意思"),
+        )
+        for _ in range(20):
+            if recorded_args:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(recorded_args) == 1, (
+            "auto-summary should have fired from the buffer fallback"
+        )
+        session_id, text = recorded_args[0]
+        assert session_id == "qq:GroupMessage:12345"
+        # Buffer must include content from both turns.
+        assert "群里" in text or "看了那个展览" in text
+        assert "展览" in text or "听起来很有意思" in text
+    finally:
+        await db.close()

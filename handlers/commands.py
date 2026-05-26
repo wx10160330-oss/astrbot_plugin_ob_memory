@@ -450,6 +450,17 @@ class MemoryCommandsMixin:
             yield event.plain_result(f"操作失败：{e}")
             return
 
+        # Counter is keyed per-conversation, not per-memory-session, so
+        # ``/memory stats`` reads the same key the auto-record hook
+        # writes to. See ``SessionResolver.resolve_counter_key``.
+        counter_key = sid
+        resolver = getattr(self, "session_resolver", None)
+        if resolver is not None and hasattr(resolver, "resolve_counter_key"):
+            try:
+                counter_key = await resolver.resolve_counter_key(event)
+            except Exception:
+                counter_key = sid
+
         decay_status = "未运行"
         if self.decay is not None:
             try:
@@ -485,13 +496,18 @@ class MemoryCommandsMixin:
             except (TypeError, ValueError):
                 n_threshold = 20
             try:
-                current = await self.manager.get_auto_record_counter(sid)  # type: ignore[union-attr]
+                current = await self.manager.get_auto_record_counter(counter_key)  # type: ignore[union-attr]
             except Exception:
                 current = 0
             remaining = max(0, n_threshold - current)
+            # The "(本对话)" suffix matters when ``scope_mode`` makes the
+            # memory session_id broader than the counter key (e.g. the
+            # user has all their windows pointing at a shared ``user:``
+            # memory pool but each window has its own ``conv:`` cadence).
+            scope_hint = "本对话" if counter_key != sid else "本会话"
             auto_record_line = (
                 f"兜底自动记录: every_n_turns {current}/{n_threshold}"
-                f"（距下次自动总结还差 {remaining} 轮）"
+                f"（距下次自动总结还差 {remaining} 轮 · {scope_hint}）"
             )
         else:
             auto_record_line = f"兜底自动记录: 未知模式 {mode!r}"
