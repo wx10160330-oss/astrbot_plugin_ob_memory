@@ -1055,7 +1055,7 @@
                     </svg></button></div>
         </div>
         <div id="sessionBar" style="position:sticky;top:42px;z-index:99;background:var(--bg);padding:6px 12px;border-bottom:1px solid var(--border);display:none;align-items:center;gap:6px;font-size:11px;color:var(--text-dim)">
-          <span style="white-space:nowrap">🎭 当前会话</span>
+          <span style="white-space:nowrap">💌 当前会话</span>
           <select id="sessionPicker" onchange="onSessionChange()" style="flex:1;min-width:0;padding:4px 6px;font-size:11px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer"></select>
         </div>
         <main style="padding-bottom:88px;max-width:500px;margin:0 auto">
@@ -1526,7 +1526,7 @@
           editingId=null;
           selectedIds.clear();
           batchMode=false;
-          showCapsuleToast('已切换会话 🎭','loading',0);
+          showCapsuleToast('已切换会话 💌','loading',0);
           await loadMemories();
           showCapsuleToast('已切换 ✨');
         }
