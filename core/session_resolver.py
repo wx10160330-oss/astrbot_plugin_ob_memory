@@ -1,7 +1,7 @@
 """Session-id resolution.
 
 Decides what string we use as the storage isolation key for an
-``AstrMessageEvent``. Three modes are supported:
+``AstrMessageEvent``. Four modes are supported:
 
 - ``conversation`` (default): one record-pool per AstrBot conversation
   window. The user's ``/new`` command starts a fresh memory pool. This
@@ -16,6 +16,12 @@ Decides what string we use as the storage isolation key for an
 - ``origin``: shared by everyone in the same ``unified_msg_origin``.
   Useful for "group-wide shared memory" scenarios — bot remembers
   events that happened in a group, every member sees the same recall.
+- ``hybrid``: private chats use ``user`` semantics (one shared pool
+  per user across all their private windows), group chats use
+  ``origin`` semantics (one shared pool per group). The natural
+  default for users who want "cross-window continuity in private but
+  group-wide shared recall in groups" without the ``user``-mode
+  side effect of fragmenting groups by speaker.
 
 The resolver is intentionally **stateless** beyond ``self.plugin``:
 config is re-read on every call so a Dashboard / config UI change
@@ -40,8 +46,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("astrbot_plugin_ob_memory.session")
 
 
-VALID_SCOPE_MODES: tuple[str, ...] = ("conversation", "user", "origin")
-"""Three accepted ``session.scope_mode`` values.
+VALID_SCOPE_MODES: tuple[str, ...] = (
+    "conversation",
+    "user",
+    "origin",
+    "hybrid",
+)
+"""Accepted ``session.scope_mode`` values.
 
 The order doubles as a documentation-style "default first" hint.
 """
@@ -126,6 +137,35 @@ class SessionResolver:
             return None
         return str(cid) if cid else None
 
+    def _is_private_chat(self, event: AstrMessageEvent) -> bool:
+        """Decide whether this event is a private/direct message.
+
+        Prefers AstrBot's :meth:`is_private_chat` when available; falls
+        back to a substring check against ``unified_msg_origin`` so
+        test stubs and exotic adapters still work.
+
+        Any unrecognised origin defaults to ``False`` (treated as
+        group) so ``hybrid`` mode keeps group-style sharing semantics
+        in the ambiguous case rather than accidentally fragmenting a
+        group pool by sender.
+        """
+        getter = getattr(event, "is_private_chat", None)
+        if callable(getter):
+            try:
+                value = getter()
+            except Exception as e:
+                logger.debug("is_private_chat failed: %s", e)
+                value = None
+            if isinstance(value, bool):
+                return value
+        umo = getattr(event, "unified_msg_origin", "") or ""
+        umo_str = str(umo)
+        if "FriendMessage" in umo_str or ":Private:" in umo_str or ":Friend:" in umo_str:
+            return True
+        if "GroupMessage" in umo_str or ":Group:" in umo_str:
+            return False
+        return False
+
     def _sender_id(self, event: AstrMessageEvent) -> str | None:
         """Read the sender id, accepting either method or attribute."""
         getter = getattr(event, "get_sender_id", None)
@@ -162,6 +202,17 @@ class SessionResolver:
                 cid = await self._conversation_id(event)
                 if cid:
                     return f"conv:{cid}"
+                return _origin_of(event)
+            if mode == "hybrid":
+                # Private chat → user semantics so all the user's
+                # private windows share one pool. Group chat (or any
+                # non-private event) → origin semantics so the whole
+                # group shares one pool rather than fragmenting by
+                # speaker.
+                if self._is_private_chat(event):
+                    sender = self._sender_id(event)
+                    if sender:
+                        return f"user:{sender}"
                 return _origin_of(event)
             # ``origin`` mode (and the safety fallback)
             return _origin_of(event)

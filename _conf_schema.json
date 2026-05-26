@@ -48,8 +48,8 @@
   "scope_mode": {
     "description": "记忆隔离粒度",
     "type": "string",
-    "hint": "conversation = 每个对话窗口独立（默认，AI 伴侣推荐）；user = 同一用户跨窗口/平台共享一份记忆；origin = 同一群/私聊全员共享。切换粒度不会迁移已有数据。",
-    "options": ["conversation", "user", "origin"],
+    "hint": "conversation = 每个对话窗口独立（默认，AI 伴侣推荐）；user = 同一用户跨窗口/平台共享一份记忆（注意：群聊里会按每个说话人切碎）；origin = 同一群/私聊全员共享；hybrid = 私聊用 user 语义（同一用户跨窗口共享）+ 群聊用 origin 语义（一个群一份），想要『私聊连续 + 群聊全员共享』选这个。切换粒度不会迁移已有数据。",
+    "options": ["conversation", "user", "origin", "hybrid"],
     "default": "conversation"
   },
   "tagging_enabled": {
