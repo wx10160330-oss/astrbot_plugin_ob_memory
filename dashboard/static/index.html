@@ -1492,10 +1492,10 @@
             return m.pinned
           });
           else if(filterStatus==='active')list=list.filter(function(m){
-            return!m.resolved&&!m.pinned&&!m.digested&&m.type!=='feel'&&m.type!=='archive'
+            return!m.resolved&&!m.pinned&&!m.digested&&m.type!=='feel'&&m.type!=='archived'
           });
           else if(filterStatus==='dormant')list=list.filter(function(m){
-            return m.type==='archive'
+            return m.type==='archived'
           });
           else if(filterStatus==='feel')list=list.filter(function(m){
             return m.type==='feel'
@@ -1522,9 +1522,9 @@
             t:memories.length,p:memories.filter(function(m){
               return m.pinned
             }).length,a:memories.filter(function(m){
-              return!m.resolved&&!m.pinned&&!m.digested&&m.type!=='feel'&&m.type!=='archive'
+              return!m.resolved&&!m.pinned&&!m.digested&&m.type!=='feel'&&m.type!=='archived'
             }).length,ar:memories.filter(function(m){
-              return m.type==='archive'
+              return m.type==='archived'
             }).length,f:memories.filter(function(m){
               return m.type==='feel'
             }).length,dg:memories.filter(function(m){
@@ -1606,7 +1606,7 @@
           renderBatchBar();setTimeout(initSliders,10);if(_doScrollTop){setTimeout(function(){window.scrollTo(0,0)},20);}_doScrollTop=false;_skipScroll=false;_opLock=false;_suppressCardAnim=false;
         }
                 function renderCard(m,idx){
-          var isFeel=m.type==='feel',isArc=m.type==='archive',isDig=m.digested;
+          var isFeel=m.type==='feel',isArc=m.type==='archived',isDig=m.digested;
           var bc;
           if(isFeel){
             if(m.pinned)bc='pinned';
