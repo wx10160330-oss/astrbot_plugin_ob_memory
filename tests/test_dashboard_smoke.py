@@ -307,6 +307,33 @@ def test_dashboard_recall_filters_match_backend_bucket_type():
     assert '"archive"' not in content
 
 
+def test_dashboard_dormant_filter_includes_user_resolved_buckets():
+    """Regression: the ``沉底`` tab must include buckets the user manually
+    marked as sunken via the ``💤 沉底`` button.
+
+    The 沉底 quick-action calls ``PUT /api/memories/<id>`` with
+    ``{resolved: true, pinned: false}`` (see ``toggleResolved``). Before
+    this fix, the dormant-tab filter was only
+    ``m.type === 'archived'`` (the value the decay engine sets when a
+    score drops below threshold), so user-resolved non-feel buckets
+    leaked into neither tab — they disappeared from the UI entirely.
+
+    The fix unifies the two concepts in the recall view: dormant catches
+    both auto-archived buckets AND user-resolved buckets (excluding
+    feels, which have their own tab and a separate badge already covering
+    feel·已沉底).
+    """
+    html = Path(__file__).resolve().parents[1] / "dashboard" / "static" / "index.html"
+    content = html.read_text(encoding="utf-8")
+
+    # The dormant filter must include user-resolved items.
+    assert "(m.type==='archived'||m.resolved)&&m.type!=='feel'" in content
+
+    # The renderCard non-feel branch must label resolved items as 已沉底
+    # (not 活跃中) so the badge agrees with the tab classification.
+    assert "else if(isArc||m.resolved)statusLabel='已沉底'" in content
+
+
 @pytest.mark.asyncio
 async def test_dashboard_health_endpoint(tmp_path: Path):
     """/health returns 200 without auth."""
