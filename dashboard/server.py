@@ -108,15 +108,29 @@ def _bucket_payload(bucket, *, score: float | None = None) -> dict[str, Any]:
 
 
 async def _pick_dashboard_session(plugin) -> str | None:
+    """Pick which session the dashboard should display by default.
+
+    Priority:
+      1. ``dashboard_session_id`` config override (if user pinned one).
+      2. The most-recently-active session, so users who jump between
+         private and group chats land on the one they just used.
+
+    The previous implementation fell back to the alphabetically-first
+    session, which meant opening a brand-new chat with an earlier
+    session_id could silently hide the user's existing memories from
+    the dashboard view. The data was always intact in SQLite, but the
+    user had no way to know without manually configuring
+    ``dashboard_session_id``.
+    """
     if plugin.manager is None:
         return None
     configured = str((getattr(plugin, "config", {}) or {}).get("dashboard_session_id", "")).strip()
     if configured:
         return configured
-    sessions = await plugin.manager.list_sessions()
-    if not sessions:
+    sessions_meta = await plugin.manager.list_sessions_with_meta()
+    if not sessions_meta:
         return None
-    return sessions[0]
+    return str(sessions_meta[0]["session_id"])
 
 
 if TYPE_CHECKING:
@@ -654,6 +668,35 @@ class DashboardServer:
                         return JSONResponse({"ok": True})
                     return JSONResponse({"error": "删除失败"}, status_code=500)
             return JSONResponse({"error": "未找到"}, status_code=404)
+
+        async def api_sessions(request: Request) -> Response:
+            """List all sessions with memory counts and recency.
+
+            Returned shape:
+
+                {
+                  "sessions": [
+                    {"session_id": "...", "memory_count": int,
+                     "last_active_at": float},
+                    ...
+                  ],
+                  "current": "..."   # the session the dashboard would
+                                     # default to right now
+                }
+
+            Powers the dashboard's session-switcher dropdown so users
+            can flip between e.g. their private chat and a group chat
+            without editing the ``dashboard_session_id`` config by hand.
+            """
+            err = _require_auth(request)
+            if err:
+                return err
+            if self.plugin.manager is None:
+                return JSONResponse({"error": "未初始化"}, status_code=503)
+
+            sessions_meta = await self.plugin.manager.list_sessions_with_meta()
+            current = await _pick_dashboard_session(self.plugin)
+            return JSONResponse({"sessions": sessions_meta, "current": current})
 
         async def api_stats(request: Request) -> Response:
             err = _require_auth(request)
@@ -1455,6 +1498,7 @@ class DashboardServer:
             Route("/api/bucket/{bucket_id}", api_bucket_detail, methods=["GET"]),
             Route("/api/bucket/{bucket_id}", api_bucket_update, methods=["PATCH"]),
             Route("/api/bucket/{bucket_id}", api_bucket_delete, methods=["DELETE"]),
+            Route("/api/sessions", api_sessions, methods=["GET"]),
             Route("/api/stats", api_stats, methods=["GET"]),
             Route("/api/search", api_search, methods=["GET"]),
             Route("/api/memories", api_memories, methods=["GET"]),

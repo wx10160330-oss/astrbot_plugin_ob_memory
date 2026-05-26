@@ -153,6 +153,52 @@ async def test_list_sessions_returns_distinct(tmp_path: Path):
         await db.close()
 
 
+async def test_list_sessions_with_meta_returns_counts_and_recency(tmp_path: Path):
+    """``list_sessions_with_meta`` powers the dashboard's session picker.
+
+    It must return distinct sessions sorted by ``last_active_at`` DESC
+    (most recently active first) with accurate memory counts.
+    """
+    db, mgr = await _open_manager(tmp_path)
+    try:
+        # 's-old' has 2 memories, both relatively old.
+        await mgr.create_simple("s-old", "x")
+        await mgr.create_simple("s-old", "y")
+        await mgr.db.execute(
+            "UPDATE memories SET last_active_at = ? WHERE session_id = 's-old'",
+            (1000.0,),
+        )
+        # 's-new' has 1 memory but it's the most recent.
+        await mgr.create_simple("s-new", "z")
+        await mgr.db.execute(
+            "UPDATE memories SET last_active_at = ? WHERE session_id = 's-new'",
+            (2000.0,),
+        )
+
+        meta = await mgr.list_sessions_with_meta()
+        assert len(meta) == 2
+        # Most recent session must sort first — this is the property
+        # that prevents the "opened a group chat → dashboard hides my
+        # private chat memories" bug from recurring with the dashboard
+        # default picker.
+        assert meta[0]["session_id"] == "s-new"
+        assert meta[0]["memory_count"] == 1
+        assert meta[0]["last_active_at"] == 2000.0
+        assert meta[1]["session_id"] == "s-old"
+        assert meta[1]["memory_count"] == 2
+        assert meta[1]["last_active_at"] == 1000.0
+    finally:
+        await db.close()
+
+
+async def test_list_sessions_with_meta_empty(tmp_path: Path):
+    db, mgr = await _open_manager(tmp_path)
+    try:
+        assert await mgr.list_sessions_with_meta() == []
+    finally:
+        await db.close()
+
+
 async def test_count_in_session(tmp_path: Path):
     db, mgr = await _open_manager(tmp_path)
     try:

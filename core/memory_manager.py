@@ -263,6 +263,37 @@ class MemoryManager:
         )
         return [r["session_id"] for r in rows]
 
+    async def list_sessions_with_meta(self) -> list[dict[str, Any]]:
+        """Return distinct ``session_id`` values with summary metadata.
+
+        Each entry contains:
+
+        - ``session_id`` (str)
+        - ``memory_count`` (int)           — total memories in this session
+        - ``last_active_at`` (float)       — most recent ``last_active_at``
+
+        Ordered by ``last_active_at DESC`` so the most recently used
+        session sorts first. This is what the Dashboard's session
+        picker uses both for the dropdown and for the default
+        selection.
+        """
+        rows = await self.db.fetch_all(
+            "SELECT session_id, "
+            "       COUNT(*) AS memory_count, "
+            "       MAX(last_active_at) AS last_active_at "
+            "FROM memories "
+            "GROUP BY session_id "
+            "ORDER BY last_active_at DESC"
+        )
+        return [
+            {
+                "session_id": r["session_id"],
+                "memory_count": int(r["memory_count"]),
+                "last_active_at": float(r["last_active_at"] or 0.0),
+            }
+            for r in rows
+        ]
+
     async def count_in_session(self, session_id: str) -> dict[str, int]:
         """Counts per ``bucket_type`` for the given session.
 
