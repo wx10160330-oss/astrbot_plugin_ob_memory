@@ -285,6 +285,28 @@ def test_dashboard_pulse_page_exposes_maintenance_actions():
     assert "后续再接" not in content
 
 
+def test_dashboard_recall_filters_match_backend_bucket_type():
+    """Regression: dashboard JS must compare against ``'archived'`` (past
+    tense), not ``'archive'``. Earlier builds used ``m.type === 'archive'``
+    which never matched the backend's ``bucket_type='archived'`` value, so
+    sunken memories disappeared from the ``沉底`` tab entirely and leaked
+    into ``活跃中``.
+
+    See ``core/models.py``: ``BucketType`` is the source of truth and
+    spells the value ``'archived'``.
+    """
+    html = Path(__file__).resolve().parents[1] / "dashboard" / "static" / "index.html"
+    content = html.read_text(encoding="utf-8")
+
+    # The frontend must use the exact backend value.
+    assert "m.type==='archived'" in content
+    assert "m.type!=='archived'" in content
+
+    # And must not accidentally regress to the singular form anywhere.
+    assert "'archive'" not in content
+    assert '"archive"' not in content
+
+
 @pytest.mark.asyncio
 async def test_dashboard_health_endpoint(tmp_path: Path):
     """/health returns 200 without auth."""
