@@ -77,6 +77,15 @@ def _make_plugin_for_dashboard(tmp_path: Path):
     async def fake_list_sessions():
         return ["session-A"]
 
+    async def fake_list_sessions_with_meta():
+        return [
+            {
+                "session_id": "session-A",
+                "memory_count": len(buckets),
+                "last_active_at": time.time(),
+            }
+        ]
+
     async def fake_list_by_session(session_id, include_archived=False):
         return list(buckets.values()) if session_id == "session-A" else []
 
@@ -90,6 +99,7 @@ def _make_plugin_for_dashboard(tmp_path: Path):
         return new_bucket.id
 
     plugin.manager.list_sessions = fake_list_sessions
+    plugin.manager.list_sessions_with_meta = fake_list_sessions_with_meta
     plugin.manager.list_by_session = fake_list_by_session
     plugin.manager.get = fake_get
     plugin.manager.create = fake_create
@@ -217,6 +227,7 @@ def test_dashboard_server_builds_app(tmp_path: Path):
     assert "/auth/setup" in paths
     assert "/api/buckets" in paths
     assert "/api/bucket/{bucket_id}" in paths
+    assert "/api/sessions" in paths
     assert "/api/stats" in paths
     assert "/api/search" in paths
     assert "/api/memories" in paths
@@ -307,6 +318,38 @@ def test_dashboard_recall_filters_match_backend_bucket_type():
     assert '"archive"' not in content
 
 
+def test_dashboard_session_picker_ui_exists():
+    """Regression: the dashboard must expose a session-switcher dropdown.
+
+    Without it, users with multiple sessions (e.g. private chat + group
+    chat under ``scope_mode=conversation``) cannot tell that the
+    dashboard is showing one session at a time, nor switch between
+    them. This led to a panicked "I opened the group chat and now my
+    private chat memories are GONE" report — the data was always in
+    SQLite, just not in the view.
+
+    The dropdown must:
+      - Live in the ``#sessionBar`` container right under the top bar.
+      - Have a ``<select id="sessionPicker">`` that calls
+        ``onSessionChange()`` so flipping it reloads memories.
+      - Hide itself when there is only a single session (no point).
+    """
+    html = Path(__file__).resolve().parents[1] / "dashboard" / "static" / "index.html"
+    content = html.read_text(encoding="utf-8")
+
+    assert 'id="sessionBar"' in content
+    assert 'id="sessionPicker"' in content
+    assert "onSessionChange()" in content
+    assert "loadSessions()" in content
+    # The picker must round-trip the selection to localStorage so a
+    # page refresh doesn't kick the user back to "default" and again
+    # hide their private chat.
+    assert "memory_dashboard_session_id" in content
+    # And it must actually pass the session as a query param when
+    # fetching memories.
+    assert "'/api/memories?session='" in content or "'/api/memories'+'?session='" in content or "/api/memories" in content
+
+
 def test_dashboard_dormant_filter_includes_user_resolved_buckets():
     """Regression: the ``沉底`` tab must include buckets the user manually
     marked as sunken via the ``💤 沉底`` button.
@@ -376,10 +419,14 @@ async def test_dashboard_login_flow(tmp_path: Path):
     async def fake_list_sessions():
         return []
 
+    async def fake_list_sessions_with_meta():
+        return []
+
     async def fake_count_in_session(sid):
         return {}
 
     plugin.manager.list_sessions = fake_list_sessions
+    plugin.manager.list_sessions_with_meta = fake_list_sessions_with_meta
     plugin.manager.count_in_session = fake_count_in_session
     plugin.decay = None
     plugin.embedding = None
@@ -403,6 +450,202 @@ async def test_dashboard_login_flow(tmp_path: Path):
         assert resp.status_code == 200
         data = resp.json()
         assert "total" in data
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_returns_list_and_current(tmp_path: Path):
+    """``/api/sessions`` returns every distinct session with metadata.
+
+    Regression test for the "opened a group chat and lost my private
+    chat memories" report. The dashboard needs an endpoint that
+    enumerates every session in the DB so the UI can render a
+    switcher; without it the user has no way to see that the data
+    they're worried about still exists.
+    """
+    from starlette.testclient import TestClient
+
+    plugin = MagicMock()
+    plugin.decay = None
+    plugin.embedding = None
+    plugin.search = None
+    plugin.tagger = None
+    plugin.writer = None
+    plugin.manager = MagicMock()
+    plugin.config = {}
+
+    sessions_meta = [
+        {"session_id": "conv:group-123", "memory_count": 5, "last_active_at": 2000.0},
+        {"session_id": "conv:private-abc", "memory_count": 50, "last_active_at": 1000.0},
+    ]
+
+    async def fake_list_sessions_with_meta():
+        return list(sessions_meta)
+
+    plugin.manager.list_sessions_with_meta = fake_list_sessions_with_meta
+
+    server = DashboardServer(plugin, tmp_path)
+    app = server.build_app()
+
+    with TestClient(app) as client:
+        client.post("/auth/setup", json={"password": "test1234"})
+
+        resp = client.get("/api/sessions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "sessions" in data
+        assert "current" in data
+        assert len(data["sessions"]) == 2
+        assert {s["session_id"] for s in data["sessions"]} == {
+            "conv:group-123",
+            "conv:private-abc",
+        }
+        # The most-recently-active session must be the default
+        # (NOT the alphabetically-first), so the user lands on whatever
+        # they just used. Otherwise a brand-new group chat with a
+        # session_id that happens to sort earlier would silently hide
+        # their existing memories.
+        assert data["current"] == "conv:group-123"
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_respects_dashboard_session_id_override(tmp_path: Path):
+    """If the user pinned a specific ``dashboard_session_id`` in config,
+    ``current`` reflects that override regardless of recency. This is
+    the manual escape hatch a user has when they want to lock the
+    dashboard onto one particular session (e.g. a private chat) even
+    while other sessions get more recent activity."""
+    from starlette.testclient import TestClient
+
+    plugin = MagicMock()
+    plugin.decay = None
+    plugin.embedding = None
+    plugin.search = None
+    plugin.tagger = None
+    plugin.writer = None
+    plugin.manager = MagicMock()
+    plugin.config = {"dashboard_session_id": "conv:private-abc"}
+
+    async def fake_list_sessions_with_meta():
+        return [
+            {"session_id": "conv:group-123", "memory_count": 5, "last_active_at": 2000.0},
+            {"session_id": "conv:private-abc", "memory_count": 50, "last_active_at": 1000.0},
+        ]
+
+    plugin.manager.list_sessions_with_meta = fake_list_sessions_with_meta
+
+    server = DashboardServer(plugin, tmp_path)
+    app = server.build_app()
+
+    with TestClient(app) as client:
+        client.post("/auth/setup", json={"password": "test1234"})
+
+        resp = client.get("/api/sessions")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Override wins over "most recent" default.
+        assert data["current"] == "conv:private-abc"
+
+
+@pytest.mark.asyncio
+async def test_api_memories_honors_session_query_param(tmp_path: Path):
+    """``GET /api/memories?session=<sid>`` must scope to that session.
+
+    Powers the dashboard's session-switcher: when the user picks a
+    different session in the dropdown, the frontend re-fetches with
+    ``?session=`` and must get back ONLY that session's buckets.
+    """
+    from starlette.testclient import TestClient
+
+    bucket_private = SimpleNamespace(
+        id="b-priv",
+        session_id="conv:private-abc",
+        name="私聊记忆",
+        content="只属于私聊的事",
+        domain=["日常"],
+        tags=[],
+        valence=0.5,
+        arousal=0.5,
+        importance=5,
+        bucket_type="dynamic",
+        pinned=False,
+        resolved=False,
+        digested=False,
+        activation_count=0.0,
+        created_at=time.time(),
+        last_active_at=1000.0,
+        model_valence=None,
+        source_bucket_id=None,
+    )
+    bucket_group = SimpleNamespace(
+        id="b-grp",
+        session_id="conv:group-123",
+        name="群聊记忆",
+        content="只属于群聊的事",
+        domain=["日常"],
+        tags=[],
+        valence=0.5,
+        arousal=0.5,
+        importance=5,
+        bucket_type="dynamic",
+        pinned=False,
+        resolved=False,
+        digested=False,
+        activation_count=0.0,
+        created_at=time.time(),
+        last_active_at=2000.0,
+        model_valence=None,
+        source_bucket_id=None,
+    )
+
+    plugin = MagicMock()
+    plugin.decay = None
+    plugin.embedding = None
+    plugin.search = None
+    plugin.tagger = None
+    plugin.writer = None
+    plugin.config = {}
+    plugin.manager = MagicMock()
+
+    async def fake_list_sessions():
+        return ["conv:group-123", "conv:private-abc"]
+
+    async def fake_list_sessions_with_meta():
+        return [
+            {"session_id": "conv:group-123", "memory_count": 1, "last_active_at": 2000.0},
+            {"session_id": "conv:private-abc", "memory_count": 1, "last_active_at": 1000.0},
+        ]
+
+    async def fake_list_by_session(session_id, include_archived=False):
+        if session_id == "conv:private-abc":
+            return [bucket_private]
+        if session_id == "conv:group-123":
+            return [bucket_group]
+        return []
+
+    plugin.manager.list_sessions = fake_list_sessions
+    plugin.manager.list_sessions_with_meta = fake_list_sessions_with_meta
+    plugin.manager.list_by_session = fake_list_by_session
+
+    server = DashboardServer(plugin, tmp_path)
+    app = server.build_app()
+
+    with TestClient(app) as client:
+        client.post("/auth/setup", json={"password": "test1234"})
+
+        # Default (no ?session=) → most recent (group). This is the
+        # behavior the user originally panicked about — but at least
+        # the data still exists; the picker just needs to expose it.
+        resp = client.get("/api/memories")
+        assert resp.status_code == 200
+        ids = [m["id"] for m in resp.json()]
+        assert ids == ["b-grp"]
+
+        # Explicit private session → must return private memories only,
+        # NOT the group ones.
+        resp = client.get("/api/memories?session=conv:private-abc")
+        assert resp.status_code == 200
+        ids = [m["id"] for m in resp.json()]
+        assert ids == ["b-priv"]
 
 
 @pytest.mark.asyncio
@@ -466,6 +709,15 @@ async def test_dashboard_memories_crud_compat(tmp_path: Path):
     async def fake_list_sessions():
         return ["session-A"]
 
+    async def fake_list_sessions_with_meta():
+        return [
+            {
+                "session_id": "session-A",
+                "memory_count": 1,
+                "last_active_at": time.time(),
+            }
+        ]
+
     async def fake_list_by_session(session_id, include_archived=False):
         return [bucket] if session_id == "session-A" else []
 
@@ -483,6 +735,7 @@ async def test_dashboard_memories_crud_compat(tmp_path: Path):
         return session_id == "session-A" and bucket_id == "bucket-1"
 
     plugin.manager.list_sessions = fake_list_sessions
+    plugin.manager.list_sessions_with_meta = fake_list_sessions_with_meta
     plugin.manager.list_by_session = fake_list_by_session
     plugin.manager.get = fake_get
     plugin.manager.update = fake_update

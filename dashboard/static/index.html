@@ -1054,6 +1054,10 @@
                         <line x1="21" y1="12" x2="9" y2="12" />
                     </svg></button></div>
         </div>
+        <div id="sessionBar" style="position:sticky;top:42px;z-index:99;background:var(--bg);padding:6px 12px;border-bottom:1px solid var(--border);display:none;align-items:center;gap:6px;font-size:11px;color:var(--text-dim)">
+          <span style="white-space:nowrap">🎭 当前会话</span>
+          <select id="sessionPicker" onchange="onSessionChange()" style="flex:1;min-width:0;padding:4px 6px;font-size:11px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer"></select>
+        </div>
         <main style="padding-bottom:88px;max-width:500px;margin:0 auto">
             <div class="page active" id="pageRecall">
                 <div id="recallTop"></div>
@@ -1341,7 +1345,7 @@
                 pwErr.style.display='none';
                 document.getElementById('loginPage').style.display='none';
                 document.getElementById('mainApp').style.display='block';
-                loadMemories().then(function(){window.scrollTo(0,0)});
+                loadSessions().then(function(){loadMemories().then(function(){window.scrollTo(0,0)})});
                 showCapsuleToast('密码设置成功，欢迎来到小回的记忆世界 ✨');
                 return;
               }
@@ -1369,7 +1373,7 @@
               pwErr.style.display='none';
               document.getElementById('loginPage').style.display='none';
               document.getElementById('mainApp').style.display='block';
-              loadMemories().then(function(){window.scrollTo(0,0)});
+              loadSessions().then(function(){loadMemories().then(function(){window.scrollTo(0,0)})});
               return;
             }
             document.getElementById('pwWrap').style.animation='shake .45s ease';
@@ -1408,7 +1412,7 @@
           document.getElementById('pwConfirmEyeIcon').innerHTML=h?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>' +
                   '<line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
         }
-        async function refreshData(){showCapsuleToast('刷新中...','loading',0);await loadMemories();showCapsuleToast('已刷新 ✨')}
+        async function refreshData(){showCapsuleToast('刷新中...','loading',0);await loadSessions();await loadMemories();showCapsuleToast('已刷新 ✨')}
         async function doLogoutApp(){
           try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
           document.getElementById('mainApp').style.display='none';
@@ -1452,13 +1456,90 @@
             if(d.authenticated){
               document.getElementById('loginPage').style.display='none';
               document.getElementById('mainApp').style.display='block';
-              loadMemories();
+              loadSessions().then(function(){loadMemories()});
             }
           }catch(e){
             console.error('_initSession error:', e);
           }
         })();
-        async function loadMemories(){try{var res=await fetch('/api/memories');memories=await res.json();try{var statsRes=await fetch('/api/stats');stats=await statsRes.json()}catch(e){stats=null}}catch(e){memories=[];stats=null;showToast('加载失败','err')}renderCurrentPage()}
+        var selectedSession=(function(){try{return localStorage.getItem('memory_dashboard_session_id')||''}catch(e){return''}})();
+        var sessionsList=[];
+        function _fmtRel(ts){
+          if(!ts) return '';
+          var diff=Date.now()/1000-ts;
+          if(diff<60) return '刚刚';
+          if(diff<3600) return Math.floor(diff/60)+' 分钟前';
+          if(diff<86400) return Math.floor(diff/3600)+' 小时前';
+          if(diff<86400*7) return Math.floor(diff/86400)+' 天前';
+          var d=new Date(ts*1000);
+          return (d.getMonth()+1)+'/'+d.getDate();
+        }
+        function _fmtSessionLabel(s){
+          var sid=String(s.session_id||'');
+          // Trim common prefixes for readability while keeping the discriminating suffix.
+          var shortId=sid;
+          var m=sid.match(/^(conv|user):(.+)$/);
+          if(m){shortId=m[1]+':…'+m[2].slice(-8)}
+          else if(sid.length>22){shortId='…'+sid.slice(-18)}
+          return shortId+' · '+(s.memory_count||0)+' 条 · '+_fmtRel(s.last_active_at);
+        }
+        async function loadSessions(){
+          try{
+            var res=await fetch('/api/sessions');
+            if(!res.ok) return;
+            var d=await res.json();
+            sessionsList=Array.isArray(d.sessions)?d.sessions:[];
+            var picker=document.getElementById('sessionPicker');
+            var bar=document.getElementById('sessionBar');
+            if(!picker||!bar) return;
+            // Decide which session to select right now.
+            // Order of preference:
+            //   1. localStorage (the user's last manual pick)
+            //   2. backend's "current" (config override or most-recent fallback)
+            //   3. first in the list
+            var preferred=selectedSession||d.current||(sessionsList[0]&&sessionsList[0].session_id)||'';
+            // If our preferred session no longer exists (e.g. session got
+            // wiped), fall back to the first available one so we never
+            // try to query a session that returns 0 buckets.
+            var ok=sessionsList.some(function(s){return s.session_id===preferred});
+            if(!ok&&sessionsList.length){preferred=sessionsList[0].session_id}
+            selectedSession=preferred;
+            try{localStorage.setItem('memory_dashboard_session_id',selectedSession||'')}catch(e){}
+            picker.innerHTML='';
+            sessionsList.forEach(function(s){
+              var opt=document.createElement('option');
+              opt.value=s.session_id;
+              opt.textContent=_fmtSessionLabel(s);
+              if(s.session_id===selectedSession)opt.selected=true;
+              picker.appendChild(opt);
+            });
+            // Hide the bar entirely when there's only one session — no point in showing a dropdown of one.
+            bar.style.display=sessionsList.length>1?'flex':'none';
+          }catch(e){console.error('loadSessions error:',e)}
+        }
+        async function onSessionChange(){
+          var picker=document.getElementById('sessionPicker');
+          if(!picker) return;
+          selectedSession=picker.value;
+          try{localStorage.setItem('memory_dashboard_session_id',selectedSession||'')}catch(e){}
+          recallPage=1;
+          editingId=null;
+          selectedIds.clear();
+          batchMode=false;
+          showCapsuleToast('已切换会话 🎭','loading',0);
+          await loadMemories();
+          showCapsuleToast('已切换 ✨');
+        }
+        async function loadMemories(){
+          try{
+            var url='/api/memories';
+            if(selectedSession)url+='?session='+encodeURIComponent(selectedSession);
+            var res=await fetch(url);
+            memories=await res.json();
+            try{var statsRes=await fetch('/api/stats');stats=await statsRes.json()}catch(e){stats=null}
+          }catch(e){memories=[];stats=null;showToast('加载失败','err')}
+          renderCurrentPage()
+        }
                 var _pageScrollY={};
         function switchPage(p){
           _pageScrollY[currentPage]=window.scrollY;
