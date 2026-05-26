@@ -137,6 +137,24 @@ class SessionResolver:
             return None
         return str(cid) if cid else None
 
+    def _unify_id(self) -> str | None:
+        """Read the optional ``unify_groups_into_user`` config value.
+
+        When set to a non-empty string (typically the owner's QQ /
+        sender id), every **non-private** event short-circuits to
+        ``user:{this_id}`` so all group activity flows into the same
+        memory pool as the owner's private chats. Returns ``None``
+        when the toggle is disabled.
+        """
+        cfg = getattr(self.plugin, "config", None)
+        if not isinstance(cfg, dict):
+            return None
+        raw = cfg.get("unify_groups_into_user")
+        if not isinstance(raw, str):
+            return None
+        val = raw.strip()
+        return val or None
+
     def _is_private_chat(self, event: AstrMessageEvent) -> bool:
         """Decide whether this event is a private/direct message.
 
@@ -193,6 +211,19 @@ class SessionResolver:
         """
         try:
             mode = self._mode()
+
+            # Optional unify: when configured, every **group** event
+            # short-circuits to ``user:{owner_id}`` so group activity
+            # merges into the owner's private memory pool. Only
+            # active in modes where cross-context sharing makes
+            # semantic sense (``conversation`` is deliberately
+            # excluded — the whole point of that mode is per-window
+            # isolation).
+            if mode in ("hybrid", "user", "origin"):
+                unify_id = self._unify_id()
+                if unify_id and not self._is_private_chat(event):
+                    return f"user:{unify_id}"
+
             if mode == "user":
                 sender = self._sender_id(event)
                 if sender:

@@ -53,6 +53,7 @@
 | 配置项 | 默认值 | 含义 |
 |---|---|---|
 | `scope_mode` | `conversation` | 隔离粒度：`conversation` 每个对话窗口独立 / `user` 同一用户跨窗口/平台共享（群聊会按说话人切碎） / `origin` 同一群/私聊全员共享 / `hybrid` 私聊用 user 语义（同一用户跨窗口共享）+ 群聊用 origin 语义（一个群一份） |
+| `unify_groups_into_user` | （留空） | **群聊⇄私聊记忆互通开关**。填一个用户 ID（一般你自己 QQ 号），群聊里所有人的对话都被重定向到 `user:{这个 ID}` 池，跟该用户的私聊**完全共用一份记忆**。留空 = 关闭（各自独立）。仅 `hybrid` / `user` / `origin` 模式下生效 |
 | `embedding_provider_id` | （留空） | 用于向量检索的 Embedding 模型 ID。留空使用 AstrBot 默认；没配 embedding provider 时只走关键词检索 |
 | `tagging_enabled` | `true` | 写入时是否调 LLM 自动打标 + 智能合并相似桶。关闭可省每次写入 1 次 LLM 调用 |
 | `inject_memory_persona` | `true` | 是否在每次 LLM 请求前自动把「记忆行为」YAML 指引拼到 `system_prompt` 末尾，让模型像真人一样自然地用记忆功能（不必再粘到自己的人设里） |
@@ -486,6 +487,26 @@ data/plugin_data/astrbot_plugin_ob_memory/
 **重要不变量：切换 `scope_mode` 不会迁移已有数据。** 在 `conversation` 模式下记的东西，切到 `user` 后会"看不见"——切回去就能再看到。这避免了"切一下模式就把所有记忆搅乱"的事故。
 
 > **`hybrid` vs `user` 在群聊的区别**：`user` 下群里每个说话人各自一个 `user:他的QQ` session；`hybrid` 下整个群共用一个 `aiocqhttp:GroupMessage:群号` session。私聊侧两者行为一致，都是 `user:你QQ` 跨窗口共享。
+
+### 🔗 让群聊和私聊记忆**互通**（`unify_groups_into_user`）
+
+默认情况下，`hybrid` / `user` / `origin` 模式下私聊池和群聊池是**独立**的——AI 在群里不知道你私聊聊过啥，反之亦然。
+
+如果想让两边互通，在配置面板填 `unify_groups_into_user = 你的QQ号`：
+
+| 事件 | 关闭（默认） | 开启（填了你 QQ） |
+|---|---|---|
+| 你私聊 → bot | `user:你QQ` | `user:你QQ` |
+| 你在群里说话 | 按 `scope_mode` 决定 | **`user:你QQ`**（重定向） |
+| 群友 A 在群里说话 | 按 `scope_mode` 决定 | **`user:你QQ`**（重定向，**合并进你池子**） |
+| 其他用户 B 跟 bot 私聊 | `user:B的QQ` | `user:B的QQ`（**不动**） |
+
+效果：
+- ✅ AI 在群里能想起你私聊聊过的事
+- ✅ AI 在私聊能想起群里发生过的事（包括群友说的话、AI 在群里的回复）
+- ✅ 其他人单独跟 bot 的私聊不受影响（不会污染你的池子）
+
+> ⚠️ 用这个的前提是你**接受群友的发言被记进你的记忆库**。如果群友说了你不想记的，可以在仪表盘里手动「💤 沉底」或「删除」掉那条。
 
 ---
 

@@ -52,6 +52,12 @@
     "options": ["conversation", "user", "origin", "hybrid"],
     "default": "conversation"
   },
+  "unify_groups_into_user": {
+    "description": "群聊记忆并入某用户的私聊池（互通开关）",
+    "type": "string",
+    "hint": "填一个用户 ID（一般是你自己的 QQ 号）：所有群聊事件（群里你说的话 / 群友说的话 / AI 在群里的回复）都重定向到 user:{这个ID} 池，跟该用户的私聊记忆完全互通——AI 在群里能想起私聊聊过的事，反过来也行。留空 = 关闭，群聊和私聊各自独立。仅在 hybrid / user / origin 模式下生效（conversation 模式忽略此项）。",
+    "default": ""
+  },
   "tagging_enabled": {
     "description": "自动打标 / 智能合并",
     "type": "bool",
