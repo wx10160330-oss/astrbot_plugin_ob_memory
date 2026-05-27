@@ -89,7 +89,7 @@ class FakePrivateEvent:
 
     unified_msg_origin: str = "qq:FriendMessage:7890"
     message_str: str = ""
-    sender_name: str = "kk"
+    sender_name: str = "alice"
     sender_id: str = "7890"
 
     def get_sender_name(self) -> str:
@@ -1116,7 +1116,7 @@ async def test_buffer_decorates_user_msg_with_speaker_in_group_chat(
 async def test_buffer_leaves_private_chat_user_msg_alone(tmp_path: Path):
     """Private chats must keep the wire format bit-for-bit unchanged
     so existing summaries / configurations don't suddenly start
-    receiving ``[kk] ...`` prefixes that they never asked for.
+    receiving ``[alice] ...`` prefixes that they never asked for.
 
     Only the group-chat path enriches.
     """
@@ -1144,7 +1144,7 @@ async def test_buffer_leaves_private_chat_user_msg_alone(tmp_path: Path):
         ]
         assert len(buffers) == 1
         pairs = list(buffers[0])
-        # No ``[kk]`` prefix — private chat content must be untouched.
+        # No ``[alice]`` prefix — private chat content must be untouched.
         assert pairs[0] == ("我今天好累", "休息一下吧")
     finally:
         await db.close()
