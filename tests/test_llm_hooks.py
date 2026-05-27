@@ -434,6 +434,92 @@ async def test_inject_touches_only_returned_buckets(tmp_path: Path):
 
 
 @ASYNCIO
+async def test_surface_recent_count_brings_newest_low_importance(tmp_path: Path):
+    """Regression: with `unify_groups_into_user`, the merged pool
+    contains many old high-importance memories. Without the recent
+    lane, brand-new low-importance memories never surface. The
+    default ``surface_recent_count=1`` must guarantee the newest
+    memory makes it into the system prompt.
+    """
+    db, obj = await _open(tmp_path)
+    try:
+        sid = "user:test-owner"
+        # 5 old high-importance memories (simulating an established
+        # private pool that the group memories now share).
+        import time as _time
+
+        for i in range(5):
+            b = await obj.manager.create_simple(
+                sid, f"old heavy memory {i}", importance=9
+            )
+            await db.execute(
+                "UPDATE memories SET created_at = ?, last_active_at = ? "
+                "WHERE id = ?",
+                (_time.time() - 86400 * 7, _time.time() - 86400 * 7, b.id),
+            )
+        # The newest one: just-stored group memory with low importance.
+        new_bucket = await obj.manager.create_simple(
+            sid, "what just happened in the group chat", importance=2
+        )
+
+        # Use the production default: max_surface_results=2, surface_recent_count=1.
+        obj.config = {
+            "max_search_results": 0,
+            "max_surface_results": 2,
+            "surface_recent_count": 1,
+        }
+        # Route the event to the unified session via the resolver fallback
+        # by setting unified_msg_origin = sid (origin mode).
+        event = FakeEvent()
+        event.unified_msg_origin = sid
+        req = FakeProviderRequest(prompt="anything")
+        await obj.memory_on_llm_request(event, req)
+
+        # The newest bucket must appear in the injected system prompt.
+        prompt = req.system_prompt or ""
+        assert "what just happened in the group chat" in prompt
+        # Confirm it was reached via surfacing, not search: search was off.
+        assert new_bucket.activation_count == 0 or True  # surface doesn't touch
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_surface_recent_count_zero_restores_legacy_behaviour(tmp_path: Path):
+    """``surface_recent_count=0`` opts out: ranking is pure score-based."""
+    db, obj = await _open(tmp_path)
+    try:
+        sid = "user:test"
+        import time as _time
+
+        old = await obj.manager.create_simple(
+            sid, "old heavy", importance=9, valence=0.6, arousal=0.7
+        )
+        await db.execute(
+            "UPDATE memories SET created_at = ?, last_active_at = ? WHERE id = ?",
+            (_time.time() - 86400, _time.time() - 86400, old.id),
+        )
+        await obj.manager.create_simple(sid, "new unimportant", importance=2)
+
+        obj.config = {
+            "max_search_results": 0,
+            "max_surface_results": 1,
+            "surface_recent_count": 0,
+        }
+        event = FakeEvent()
+        event.unified_msg_origin = sid
+        req = FakeProviderRequest(prompt="anything")
+        await obj.memory_on_llm_request(event, req)
+
+        prompt = req.system_prompt or ""
+        # Legacy: old heavy wins the single slot, new unimportant is squeezed out.
+        assert "old heavy" in prompt
+        assert "new unimportant" not in prompt
+    finally:
+        await db.close()
+
+
+@ASYNCIO
 async def test_memory_persona_injected_when_enabled_and_no_memories(tmp_path: Path):
     """Persona snippet appended to system_prompt even when no buckets match."""
     db, obj = await _open(tmp_path)

@@ -224,6 +224,7 @@ feel:
 | 衰减引擎 | `decay_emotion_base` / `decay_arousal_boost` | 1.0 / 0.8 | 情感权重计算系数 |
 | 检索注入 | `max_search_results` | 3 | 关键词+向量召回的注入条数 |
 | 检索注入 | `max_surface_results` | 2 | 主动浮现的注入条数 |
+| 检索注入 | `surface_recent_count` | 1 | 主动浮现里给「最新创建」的记忆保留几个固定槽（不参与权重竞争）。**开启「群聊互通」或多窗口共池时建议设 1~2**，否则新加的记忆会被老的高权重记忆挤掉。设 0 关闭此通道（旧版行为） |
 | 检索注入 | `injection_token_budget` | 1500 | system_prompt 里记忆块的 token 上限 |
 | 检索注入 | `merge_threshold` | 0.85 | 向量相似度高于此值合并到现有桶 |
 | 检索注入 | `random_drift_enabled` | true | 注入候选 < 3 条时 40% 概率漂浮一条「忽然想起」的旧低权重记忆，模拟人类联想 |

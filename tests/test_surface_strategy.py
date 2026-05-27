@@ -97,7 +97,13 @@ async def test_cold_start_gets_slot_for_high_importance(tmp_path: Path):
         # An older, lower-importance bucket that would otherwise dominate.
         await mgr.create_simple("s", "older mediocre bucket", importance=4)
 
-        results = await surface.surface("s", token_budget=10000, max_results=5)
+        # Disable the recent lane so this test exercises the cold-start
+        # path in isolation. ``recent_count=1`` would put the mediocre
+        # bucket (newer creation time) ahead of cold, since recent has
+        # priority over cold-start by design.
+        results = await surface.surface(
+            "s", token_budget=10000, max_results=5, recent_count=0
+        )
         ids = [b.id for b in results]
         assert cold.id in ids
         # Cold-start slot should rank ahead of the older ones (after pinned,
@@ -237,3 +243,190 @@ async def test_default_token_budget_constant():
     """Sanity check that the default budget is sensible."""
     assert DEFAULT_TOKEN_BUDGET >= 200
     assert DEFAULT_TOKEN_BUDGET <= 5000
+
+
+# ===========================================================================
+# Recent lane — guarantees newest memories surface even when older heavy
+# hitters would otherwise dominate by score (e.g. shared pool with
+# unify_groups_into_user enabled).
+# ===========================================================================
+@ASYNCIO
+async def test_recent_lane_surfaces_newest_over_heavy_old(tmp_path: Path):
+    """Critical fix for `unify_groups_into_user` regression.
+
+    With many old high-weight memories in the pool, a brand-new low-
+    importance memory should still surface because of the recent lane.
+    """
+    db, mgr, surface = await _open(tmp_path)
+    try:
+        # Five old memories with high importance (simulate an established
+        # private chat pool).
+        old_ids: list[str] = []
+        for i in range(5):
+            b = await mgr.create_simple(
+                "s",
+                f"old heavy memory {i}",
+                importance=9,
+                valence=0.6,
+                arousal=0.7,
+            )
+            # Backdate so they're older than the "new" one.
+            await db.execute(
+                "UPDATE memories SET created_at = ?, last_active_at = ? "
+                "WHERE id = ?",
+                (time.time() - 86400 * 7, time.time() - 86400 * 7, b.id),
+            )
+            old_ids.append(b.id)
+
+        # The new memory: low importance (typical LLM judge output for a
+        # casual group message), brand new.
+        new = await mgr.create_simple(
+            "s", "what just happened in group chat", importance=2
+        )
+
+        # max_results=2 mimics the production default (max_surface_results=2).
+        results = await surface.surface(
+            "s", token_budget=10000, max_results=2, recent_count=1
+        )
+        ids = [b.id for b in results]
+
+        # The freshly created memory MUST surface — that's the whole point
+        # of the recent lane.
+        assert new.id in ids
+        # And it should be first (right after pinned, of which there are none).
+        assert ids[0] == new.id
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_recent_count_zero_disables_recent_lane(tmp_path: Path):
+    """Setting recent_count=0 restores legacy score-only behaviour."""
+    db, mgr, surface = await _open(tmp_path)
+    try:
+        # Old high-score memory.
+        old = await mgr.create_simple(
+            "s", "old heavy", importance=9, valence=0.6, arousal=0.7
+        )
+        await db.execute(
+            "UPDATE memories SET created_at = ?, last_active_at = ? WHERE id = ?",
+            (time.time() - 86400, time.time() - 86400, old.id),
+        )
+
+        # New low-importance memory.
+        new = await mgr.create_simple(
+            "s", "new but unimportant", importance=2
+        )
+
+        # With recent_count=0, ranking is purely score-based. Old wins.
+        results = await surface.surface(
+            "s", token_budget=10000, max_results=1, recent_count=0
+        )
+        ids = [b.id for b in results]
+        assert ids == [old.id]
+        assert new.id not in ids
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_recent_lane_capped_at_recent_count(tmp_path: Path):
+    """recent_count=2 surfaces the two newest; a third newest doesn't get
+    the dedicated slot even if older buckets have lower scores."""
+    db, mgr, surface = await _open(tmp_path)
+    try:
+        # Three buckets, all identical except creation time and importance.
+        oldest = await mgr.create_simple("s", "oldest", importance=2)
+        await db.execute(
+            "UPDATE memories SET created_at = ?, last_active_at = ? WHERE id = ?",
+            (time.time() - 30, time.time() - 30, oldest.id),
+        )
+        middle = await mgr.create_simple("s", "middle", importance=2)
+        await db.execute(
+            "UPDATE memories SET created_at = ?, last_active_at = ? WHERE id = ?",
+            (time.time() - 20, time.time() - 20, middle.id),
+        )
+        newest = await mgr.create_simple("s", "newest", importance=2)
+        await db.execute(
+            "UPDATE memories SET created_at = ?, last_active_at = ? WHERE id = ?",
+            (time.time() - 10, time.time() - 10, newest.id),
+        )
+
+        results = await surface.surface(
+            "s", token_budget=10000, max_results=2, recent_count=2
+        )
+        ids = [b.id for b in results]
+        # The two newest fill the slots, oldest is squeezed out.
+        assert newest.id in ids
+        assert middle.id in ids
+        assert oldest.id not in ids
+        # Newest first, then middle.
+        assert ids[0] == newest.id
+        assert ids[1] == middle.id
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_recent_lane_skips_pinned_and_archived(tmp_path: Path):
+    """Pinned buckets surface via pinned lane (always), not recent. Archived
+    and feel buckets are never eligible for recent lane.
+    """
+    db, mgr, surface = await _open(tmp_path)
+    try:
+        pinned = await mgr.create_simple("s", "core principle", pinned=True)
+        feel = await mgr.create_simple("s", "feeling", bucket_type="feel")
+        archived_bucket = await mgr.create_simple(
+            "s", "stale", importance=2
+        )
+        await mgr.archive("s", archived_bucket.id)
+        # The only "regular" recent bucket — should win the recent slot.
+        regular = await mgr.create_simple("s", "regular fresh", importance=3)
+
+        results = await surface.surface(
+            "s", token_budget=10000, max_results=5, recent_count=1
+        )
+        ids = [b.id for b in results]
+
+        # Pinned still surfaces (via pinned lane).
+        assert pinned.id in ids
+        # Feel and archived never surface.
+        assert feel.id not in ids
+        assert archived_bucket.id not in ids
+        # Regular bucket surfaces via recent lane.
+        assert regular.id in ids
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_recent_lane_no_dedupe_overlap_with_cold_start(tmp_path: Path):
+    """If the newest bucket is also a cold-start candidate, it appears
+    once (via recent), not twice. Dedup must not crash the cold-start
+    lane behind it.
+    """
+    db, mgr, surface = await _open(tmp_path)
+    try:
+        # An older score-winner so candidates lane isn't empty.
+        older = await mgr.create_simple(
+            "s", "older score winner", importance=6, valence=0.4, arousal=0.5
+        )
+        await db.execute(
+            "UPDATE memories SET created_at = ?, last_active_at = ? WHERE id = ?",
+            (time.time() - 60, time.time() - 60, older.id),
+        )
+        # Bucket that qualifies for both lanes: newest + high importance.
+        dual = await mgr.create_simple(
+            "s", "both new and important", importance=9
+        )
+
+        results = await surface.surface(
+            "s", token_budget=10000, max_results=5, recent_count=1
+        )
+        ids = [bucket.id for bucket in results]
+        # Appears once, not duplicated.
+        assert ids.count(dual.id) == 1
+        # And it's first (recent lane wins ahead of cold-start).
+        assert ids[0] == dual.id
+    finally:
+        await db.close()
