@@ -18,9 +18,12 @@ from astrbot_plugin_ob_memory.handlers.commands import (
     DESTRUCTIVE_TTL_SECONDS,
     MemoryCommandsMixin,
     _clean_import_text,
+    _convert_platform_history,
+    _event_is_group_chat,
     _extract_pairs_from_astrbot_jsonl,
     _is_admin,
     _pending,
+    decorate_user_msg_with_speaker,
     format_digest_pairs,
 )
 from astrbot_plugin_ob_memory.core.decay_engine import DecayConfig, DecayEngine
@@ -153,6 +156,163 @@ def test_format_digest_pairs_marks_user_perspective():
     text = format_digest_pairs([("我今天拿到了 offer", "太好了")])
     assert "对方(用户)说: 我今天拿到了 offer" in text
     assert "我(AI)回应: 太好了" in text
+
+
+def test_format_digest_pairs_lifts_speaker_tag_into_framing():
+    # Regression: when ``decorate_user_msg_with_speaker`` has tagged a
+    # turn with ``[name] ``, ``format_digest_pairs`` must move the name
+    # into the ``对方(...)说:`` framing prefix rather than leave it
+    # inside the body. Leaving it in-body risks the LLM mis-reading
+    # ``[小明] 我...`` as an in-message address ("称呼") instead of a
+    # speaker tag — the user explicitly flagged this concern.
+    text = format_digest_pairs([
+        ("[小明] 我今天拿到 offer 了", "恭喜！"),
+        ("[小红] 我家狗子刚没了", "节哀…"),
+    ])
+    assert "对方(小明)说: 我今天拿到 offer 了" in text
+    assert "对方(小红)说: 我家狗子刚没了" in text
+    # The raw ``[name] `` body form must NOT leak through, otherwise
+    # the whole lift-into-framing operation was pointless.
+    assert "[小明]" not in text
+    assert "[小红]" not in text
+
+
+def test_format_digest_pairs_empty_bracket_falls_back_to_default_label():
+    # Defensive: an empty tag like ``[]`` (shouldn't happen — the
+    # decorator declines to produce one — but exercises the parser
+    # guard) must not blow up the framing or produce ``对方()说:``.
+    text = format_digest_pairs([("[]   hello", "ok")])
+    assert "对方(用户)说: []   hello" in text
+
+
+# ===========================================================================
+# Speaker-decoration helper — group-chat "不认人" regression suite.
+#
+# Without the per-message speaker prefix the digest LLM has no way to
+# tell apart multiple users who all sit in the same ``对方(用户)`` slot
+# of ``format_digest_pairs``, and ends up cross-attributing facts
+# (the user's friend's bot doing this in group chats was the bug that
+# prompted this fix). These tests pin the contract so the enrichment
+# stays cohesive (a single helper) and zero-impact on private chats.
+# ===========================================================================
+def test_decorate_user_msg_with_speaker_basic():
+    assert (
+        decorate_user_msg_with_speaker("我今天拿到了 offer", "小明")
+        == "[小明] 我今天拿到了 offer"
+    )
+
+
+def test_decorate_user_msg_with_speaker_none_speaker_is_noop():
+    # Private chats / events without speaker info must pass through
+    # bit-for-bit so existing summary text doesn't suddenly change shape.
+    assert decorate_user_msg_with_speaker("hello", None) == "hello"
+    assert decorate_user_msg_with_speaker("hello", "") == "hello"
+    assert decorate_user_msg_with_speaker("hello", "   ") == "hello"
+
+
+def test_decorate_user_msg_with_speaker_is_idempotent():
+    # If the same buffer entry is somehow decorated twice (e.g. caller
+    # passes already-tagged text) we must not nest prefixes — the LLM
+    # would parse "[小明] [小明]" as confused metadata.
+    first = decorate_user_msg_with_speaker("hi", "小明")
+    second = decorate_user_msg_with_speaker(first, "小明")
+    assert first == second == "[小明] hi"
+
+
+def test_decorate_user_msg_with_speaker_strips_speaker_whitespace():
+    assert (
+        decorate_user_msg_with_speaker("hi", "  小明  ")
+        == "[小明] hi"
+    )
+
+
+def test_decorate_user_msg_with_speaker_non_string_text_passes_through():
+    # Defensive: a None / int slipping in (e.g. corrupt record) should
+    # not raise inside the helper — callers above us already drop empty
+    # text rows, so we only protect against type surprises here.
+    assert decorate_user_msg_with_speaker(None, "小明") is None  # type: ignore[arg-type]
+
+
+def test_convert_platform_history_default_does_not_decorate():
+    # Backwards compat: existing private-chat call sites (no
+    # ``include_speakers`` kwarg) must produce exactly the old payload
+    # so we don't disturb summaries on platforms / configurations that
+    # don't care about speakers.
+    records = [
+        SimpleNamespace(content="hi from alice", sender_name="alice", sender_id="1"),
+        SimpleNamespace(content="hi from bob", sender_name="bob", sender_id="2"),
+    ]
+    out = _convert_platform_history(records)
+    assert out == [
+        {"role": "user", "content": "hi from alice"},
+        {"role": "user", "content": "hi from bob"},
+    ]
+
+
+def test_convert_platform_history_with_speakers_tags_user_role_only():
+    # Group chat path: distinct senders get their name prefixed so the
+    # digest LLM can attribute statements correctly. Assistant messages
+    # (detected via sender_name in ``_ASSISTANT_SENDER_HINTS``) keep
+    # their original content because there is only one "I" in the
+    # conversation and ``format_digest_pairs`` already labels them.
+    records = [
+        SimpleNamespace(content="我今天拿到 offer 了", sender_name="小明", sender_id="1"),
+        SimpleNamespace(content="恭喜！", sender_name="bot", sender_id="0"),
+        SimpleNamespace(content="我家狗子刚没了", sender_name="小红", sender_id="2"),
+    ]
+    out = _convert_platform_history(records, include_speakers=True)
+    assert out == [
+        {"role": "user", "content": "[小明] 我今天拿到 offer 了"},
+        {"role": "assistant", "content": "恭喜！"},
+        {"role": "user", "content": "[小红] 我家狗子刚没了"},
+    ]
+
+
+def test_convert_platform_history_with_speakers_skips_empty_name():
+    # If a record has no sender_name we cannot enrich — leave the text
+    # alone rather than emit ``[] ...`` garbage.
+    records = [
+        SimpleNamespace(content="hello", sender_name="", sender_id=""),
+    ]
+    out = _convert_platform_history(records, include_speakers=True)
+    assert out == [{"role": "user", "content": "hello"}]
+
+
+def test_event_is_group_chat_uses_astrbot_method():
+    # When the AstrBot ``is_private_chat`` method is present we trust
+    # its boolean answer — that's the canonical signal.
+    private = SimpleNamespace(is_private_chat=lambda: True, unified_msg_origin="x")
+    group = SimpleNamespace(is_private_chat=lambda: False, unified_msg_origin="x")
+    assert _event_is_group_chat(private) is False
+    assert _event_is_group_chat(group) is True
+
+
+def test_event_is_group_chat_falls_back_to_umo_substring():
+    # Some test stubs / unusual adapters don't expose ``is_private_chat``
+    # — we should still classify based on the unified_msg_origin so
+    # speaker enrichment lights up for obvious group umos.
+    group = SimpleNamespace(unified_msg_origin="qq:GroupMessage:12345")
+    private = SimpleNamespace(unified_msg_origin="qq:FriendMessage:7890")
+    unknown = SimpleNamespace(unified_msg_origin="weird:adapter:abc")
+    assert _event_is_group_chat(group) is True
+    assert _event_is_group_chat(private) is False
+    # Unknown shapes default to ``False`` so we don't accidentally
+    # decorate private chats whose umo we can't parse.
+    assert _event_is_group_chat(unknown) is False
+
+
+def test_event_is_group_chat_swallows_exceptions():
+    # A misbehaving ``is_private_chat`` (raises) should fall back to
+    # ``unified_msg_origin`` rather than propagate up to the hook
+    # pipeline — wrong attribution beats a crashed handler.
+    def boom():
+        raise RuntimeError("adapter exploded")
+
+    event = SimpleNamespace(
+        is_private_chat=boom,
+        unified_msg_origin="qq:GroupMessage:12345",
+    )
+    assert _event_is_group_chat(event) is True
 
 
 # ===========================================================================
