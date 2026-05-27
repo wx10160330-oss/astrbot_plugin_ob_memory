@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from .embedding_service import EmbeddingService
 from .memory_manager import MemoryManager
 from .models import MemoryBucket, clamp_bucket, new_bucket
+from .prompts import DIGEST_PROMPT, GROUP_DIGEST_ADDENDUM
 from .tagger import Tagger
 
 logger = logging.getLogger("astrbot_plugin_ob_memory.writer")
@@ -114,6 +115,8 @@ class MemoryWriter:
         tagging_enabled: bool = True,
         merge_enabled: bool = True,
         digest_prompt: str = "",
+        digest_prompt_group: str = "",
+        digest_prompt_private: str = "",
     ):
         self.manager = manager
         self.tagger = tagger
@@ -123,8 +126,18 @@ class MemoryWriter:
         # whenever config is reloaded; tests can poke them directly.
         self.tagging_enabled = tagging_enabled
         self.merge_enabled = merge_enabled
-        # User-customisable digest prompt (empty = use built-in default)
+        # User-customisable digest prompts.  Three-tier resolution:
+        # - ``digest_prompt_group`` / ``digest_prompt_private`` are
+        #   context-specific overrides set by the user.  When present
+        #   they win and are used verbatim (no addendum).
+        # - ``digest_prompt`` is the legacy single-prompt field, kept
+        #   for backwards compat.  When set without a context-specific
+        #   override, it is used as the base for both group and private,
+        #   with the group addendum auto-appended for group context.
+        # - All empty: built-in DIGEST_PROMPT (+ addendum for group).
         self.digest_prompt = digest_prompt
+        self.digest_prompt_group = digest_prompt_group
+        self.digest_prompt_private = digest_prompt_private
 
     # ------------------------------------------------------------------
     # hold (event memory)
@@ -460,6 +473,8 @@ class MemoryWriter:
         self,
         session_id: str,
         content: str,
+        *,
+        group_context: bool = False,
     ) -> DigestResult:
         """Split a long passage into entries and hold each as its own memory.
 
@@ -471,6 +486,13 @@ class MemoryWriter:
           (LLM error, embedding error, race-deleted merge target) does
           NOT abort the rest.
         - Returns a :class:`DigestResult` summarising created vs merged.
+
+        ``group_context`` tells the digest LLM that the input comes from
+        a group chat with multiple speakers.  When ``True``, a
+        perspective addendum is appended to the system prompt instructing
+        the model to use third-person names for each speaker rather than
+        ambiguous "你".  Private-chat callers pass ``False`` (default) so
+        the familiar "你/我" perspective is preserved.
 
         Used by the ``record_diary`` LLM tool. With no Tagger or no LLM
         provider this degrades to the single-bucket fast path.
@@ -489,12 +511,49 @@ class MemoryWriter:
                 logger.warning("hold_diary fast path failed: %s", e)
                 return DigestResult(entries=[], failed=1)
 
+        # Build effective digest system prompt.  Three-tier resolution
+        # by context:
+        #
+        # GROUP CHAT (``group_context=True``):
+        #   1. ``digest_prompt_group`` if set → verbatim (user controls
+        #      both the base prompt AND any perspective rules)
+        #   2. ``digest_prompt`` (legacy) if set → + GROUP_DIGEST_ADDENDUM
+        #   3. default ``DIGEST_PROMPT`` + GROUP_DIGEST_ADDENDUM
+        #
+        # PRIVATE CHAT (``group_context=False``):
+        #   1. ``digest_prompt_private`` if set → verbatim
+        #   2. ``digest_prompt`` (legacy) if set → verbatim
+        #   3. default ``DIGEST_PROMPT``
+        legacy_prompt = self.digest_prompt.strip() if self.digest_prompt else ""
+        if group_context:
+            group_prompt = (
+                self.digest_prompt_group.strip()
+                if self.digest_prompt_group else ""
+            )
+            if group_prompt:
+                effective_prompt = group_prompt
+            elif legacy_prompt:
+                effective_prompt = legacy_prompt + GROUP_DIGEST_ADDENDUM
+            else:
+                effective_prompt = DIGEST_PROMPT + GROUP_DIGEST_ADDENDUM
+        else:
+            private_prompt = (
+                self.digest_prompt_private.strip()
+                if self.digest_prompt_private else ""
+            )
+            if private_prompt:
+                effective_prompt = private_prompt
+            elif legacy_prompt:
+                effective_prompt = legacy_prompt
+            else:
+                effective_prompt = DIGEST_PROMPT
+
         # Normal path: split into entries via LLM.
         try:
             entries = await self.tagger.digest(
                 text,
                 session_id=session_id,
-                digest_prompt_override=self.digest_prompt or None,
+                digest_prompt_override=effective_prompt,
             )
         except Exception as e:
             logger.warning(

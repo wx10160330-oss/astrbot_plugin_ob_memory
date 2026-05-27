@@ -303,6 +303,7 @@ async def test_auto_record_uses_hold_diary_with_digest_text(tmp_path: Path):
         obj.writer.hold_diary.assert_called_once_with(
             "qq:GroupMessage:12345",
             format_digest_pairs([("我今天拿到了 offer", "太好了，恭喜你。")]),
+            group_context=False,
         )
     finally:
         await db.close()
@@ -746,7 +747,7 @@ async def test_every_n_turns_triggers_summary_at_threshold(tmp_path: Path):
     try:
         recorded_args: list[tuple[str, str]] = []
 
-        async def fake_hold_diary(session_id, text):
+        async def fake_hold_diary(session_id, text, **kwargs):
             recorded_args.append((session_id, text))
             return MagicMock(entries=[], created=1, merged=0, failed=0)
 
@@ -903,7 +904,7 @@ async def test_every_n_turns_falls_back_to_rolling_buffer_on_empty_history(
     try:
         recorded_args: list[tuple[str, str]] = []
 
-        async def fake_hold_diary(session_id, text):
+        async def fake_hold_diary(session_id, text, **kwargs):
             recorded_args.append((session_id, text))
             return MagicMock(entries=[], created=1, merged=0, failed=0)
 
@@ -1076,7 +1077,7 @@ async def test_group_summary_propagates_speaker_tags_into_digest_text(
     try:
         recorded_args: list[tuple[str, str]] = []
 
-        async def fake_hold_diary(session_id, text):
+        async def fake_hold_diary(session_id, text, **kwargs):
             recorded_args.append((session_id, text))
             return MagicMock(entries=[], created=1, merged=0, failed=0)
 
@@ -1118,5 +1119,134 @@ async def test_group_summary_propagates_speaker_tags_into_digest_text(
         # Sanity: the raw [name] body form must not leak through.
         assert "[小明]" not in digest_text
         assert "[小红]" not in digest_text
+    finally:
+        await db.close()
+
+
+# ===========================================================================
+# Group-chat perspective consistency
+#
+# Ensures the group_context flag is threaded to hold_diary so the
+# digest LLM gets the GROUP_DIGEST_ADDENDUM instructing it to use
+# third-person speaker names rather than ambiguous "你".
+# ===========================================================================
+@ASYNCIO
+async def test_auto_summary_passes_group_context_true_for_group_events(tmp_path: Path):
+    """_auto_summary_task must pass group_context=True when event is a
+    group chat, so hold_diary appends GROUP_DIGEST_ADDENDUM to the
+    system prompt."""
+    db, obj = await _open(tmp_path)
+    try:
+        captured_kwargs: list[dict] = []
+
+        async def spy_hold_diary(session_id, text, **kwargs):
+            captured_kwargs.append(kwargs)
+            return MagicMock(entries=[], created=1, merged=0, failed=0)
+
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = spy_hold_diary
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 2,
+        }
+
+        async def empty_history(event):
+            return ([], "no cid for group adapter")
+
+        obj._get_conversation_history = empty_history  # type: ignore[attr-defined]
+
+        group_event = FakeGroupEvent(message_str="我拿到 offer 了")
+        response = MagicMock(completion_text="恭喜你")
+
+        # Turn 1
+        await obj.memory_on_llm_response(group_event, response)
+        # Turn 2 → triggers summary
+        group_event2 = FakeGroupEvent(
+            message_str="下周入职", sender_name="小红", sender_id="2002"
+        )
+        response2 = MagicMock(completion_text="期待")
+        await obj.memory_on_llm_response(group_event2, response2)
+
+        # Give asyncio tasks a chance to run
+        import asyncio
+        await asyncio.sleep(0.1)
+
+        assert len(captured_kwargs) >= 1
+        assert captured_kwargs[0].get("group_context") is True
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_auto_summary_passes_group_context_false_for_private_events(tmp_path: Path):
+    """Private-chat events must pass group_context=False so the
+    familiar 你/我 perspective is preserved."""
+    db, obj = await _open(tmp_path)
+    try:
+        captured_kwargs: list[dict] = []
+
+        async def spy_hold_diary(session_id, text, **kwargs):
+            captured_kwargs.append(kwargs)
+            return MagicMock(entries=[], created=1, merged=0, failed=0)
+
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = spy_hold_diary
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 2,
+        }
+
+        async def fake_history(event):
+            return ([
+                {"role": "user", "content": "今天好累"},
+                {"role": "assistant", "content": "休息一下"},
+                {"role": "user", "content": "嗯"},
+                {"role": "assistant", "content": "晚安"},
+            ], "ok")
+
+        obj._get_conversation_history = fake_history  # type: ignore[attr-defined]
+
+        private_event = FakePrivateEvent(message_str="今天好累")
+        response = MagicMock(completion_text="休息一下")
+        await obj.memory_on_llm_response(private_event, response)
+
+        private_event2 = FakePrivateEvent(message_str="嗯")
+        response2 = MagicMock(completion_text="晚安")
+        await obj.memory_on_llm_response(private_event2, response2)
+
+        import asyncio
+        await asyncio.sleep(0.1)
+
+        assert len(captured_kwargs) >= 1
+        assert captured_kwargs[0].get("group_context") is False
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_per_turn_auto_record_passes_group_context_for_group(tmp_path: Path):
+    """Per-turn mode: _auto_record_task receives group_context from the
+    event's is_private_chat status."""
+    db, obj = await _open(tmp_path)
+    try:
+        obj.tagger = StubAnalyser(should_record=True, reason="important")
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = MagicMock()
+        obj.writer.hold_diary.return_value = MagicMock(entries=[], created=0, merged=0, failed=0)
+
+        await obj._auto_record_task(
+            "qq:GroupMessage:12345",
+            "[小明] 我今天拿到了 offer",
+            "太好了，恭喜你。",
+            group_context=True,
+        )
+
+        obj.writer.hold_diary.assert_called_once_with(
+            "qq:GroupMessage:12345",
+            format_digest_pairs([("[小明] 我今天拿到了 offer", "太好了，恭喜你。")]),
+            group_context=True,
+        )
     finally:
         await db.close()

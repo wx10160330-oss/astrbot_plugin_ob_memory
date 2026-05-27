@@ -1139,6 +1139,14 @@ class DashboardServer:
                             pass
                     if "digest_prompt" in updated:
                         self.plugin.writer.digest_prompt = str(updated["digest_prompt"])
+                    if "digest_prompt_group" in updated:
+                        self.plugin.writer.digest_prompt_group = str(
+                            updated["digest_prompt_group"]
+                        )
+                    if "digest_prompt_private" in updated:
+                        self.plugin.writer.digest_prompt_private = str(
+                            updated["digest_prompt_private"]
+                        )
             return JSONResponse({"ok": True, "runtime_only": True})
 
         async def api_backfill_embeddings(request: Request) -> Response:
@@ -1263,6 +1271,12 @@ class DashboardServer:
                     pass
                 self.plugin.writer.digest_prompt = str(
                     self.plugin.config.get("digest_prompt", "") or ""
+                )
+                self.plugin.writer.digest_prompt_group = str(
+                    self.plugin.config.get("digest_prompt_group", "") or ""
+                )
+                self.plugin.writer.digest_prompt_private = str(
+                    self.plugin.config.get("digest_prompt_private", "") or ""
                 )
             return JSONResponse({"ok": True, "runtime_only": True})
 

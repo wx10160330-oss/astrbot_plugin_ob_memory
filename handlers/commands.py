@@ -644,6 +644,7 @@ class MemoryCommandsMixin:
             return
 
         sid = await _resolve_session_via_plugin(self, event)
+        is_group = _event_is_group_chat(event)
 
         # Determine how many rounds to summarize
         cfg = getattr(self, "config", {}) or {}
@@ -682,6 +683,18 @@ class MemoryCommandsMixin:
             )
             return
 
+        # In group chats, prefer the in-memory rolling buffer (populated by
+        # _maybe_schedule_auto_record) because it carries per-message
+        # speaker tags. conversation_manager history is per-(group, user)
+        # and doesn't include other speakers' names.
+        if is_group:
+            buffers = getattr(self, "_recent_pairs", None) or {}
+            buf = buffers.get(sid)
+            if buf:
+                buffer_pairs = list(buf)
+                if buffer_pairs:
+                    pairs = buffer_pairs
+
         # Limit to last N rounds if specified
         if n > 0 and len(pairs) > n:
             pairs = pairs[-n:]
@@ -699,7 +712,9 @@ class MemoryCommandsMixin:
 
         # Use hold_diary to split and store
         try:
-            result = await self.writer.hold_diary(sid, full_text)  # type: ignore[union-attr]
+            result = await self.writer.hold_diary(  # type: ignore[union-attr]
+                sid, full_text, group_context=is_group,
+            )
         except Exception as e:
             yield event.plain_result(f"总结失败：{e}")
             return
