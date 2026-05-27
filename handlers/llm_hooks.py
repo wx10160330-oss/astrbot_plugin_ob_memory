@@ -396,11 +396,15 @@ class MemoryHooksMixin:
             max_surface = int(cfg.get("max_surface_results", 2))
             budget = int(cfg.get("injection_token_budget", 1500))
             random_drift_enabled = bool(cfg.get("random_drift_enabled", True))
+            surface_recent = int(cfg.get("surface_recent_count", 1))
         except (TypeError, ValueError):
             max_search = 3
             max_surface = 2
             budget = 1500
             random_drift_enabled = True
+            surface_recent = 1
+        if surface_recent < 0:
+            surface_recent = 0
 
         user_query = _user_msg_from_request(req)
 
@@ -425,6 +429,7 @@ class MemoryHooksMixin:
                     session_id,
                     token_budget=budget,
                     max_results=max_surface,
+                    recent_count=surface_recent,
                 )
             except Exception as e:
                 logger.debug("surface channel skipped: %s", e)

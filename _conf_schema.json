@@ -156,6 +156,13 @@
     "default": 2,
     "condition": { "advanced_mode": true }
   },
+  "surface_recent_count": {
+    "description": "最近记忆保底条数",
+    "type": "int",
+    "hint": "主动浮现里给「最新创建」的记忆保留几个固定槽位（不参与权重竞争）。开启「群聊互通」或 scope_mode=user 让多个窗口共用同一池子时，新加的记忆容易被老的高权重记忆挤掉——设 1~2 能让刚发生的事至少有一条总在脑子里。设 0 关闭此通道（旧版行为）。",
+    "default": 1,
+    "condition": { "advanced_mode": true }
+  },
   "injection_token_budget": {
     "description": "注入 token 预算",
     "type": "int",

@@ -11,12 +11,19 @@ Selection priorities (high to low):
 
 1. **Pinned** ("core principle") buckets — always shown, regardless of
    score. There are typically only a handful per session.
-2. **Cold-start** buckets — freshly stored (created within last 24h),
+2. **Recent** buckets — the most recently created N buckets (default 1),
+   regardless of importance or activation. Guarantees that what just
+   happened a moment ago can be brought to mind even when the session
+   pool contains hundreds of older high-weight memories. Particularly
+   useful when many windows share one pool (``user`` scope_mode or
+   ``unify_groups_into_user``) so the newest item never gets crowded
+   out by old heavy hitters.
+3. **Cold-start** buckets — freshly stored (created within last 24h),
    high-importance (≥ 8), not yet retrieved (activation_count == 0).
    These are memories the model just decided were important enough to
    record; surfacing them once ensures they land in the next conversation
    instead of waiting to be searched. Up to 2 per surface call.
-3. **Activation_Score winners** — by descending DecayEngine score. This
+4. **Activation_Score winners** — by descending DecayEngine score. This
    naturally promotes high-arousal unresolved memories thanks to the
    urgency boost in the decay formula.
 
@@ -50,6 +57,15 @@ COLD_START_IMPORTANCE_MIN: int = 8
 COLD_START_AGE_SECONDS: float = 24 * 3600.0
 COLD_START_MAX: int = 2
 """Conditions for a bucket to count as a cold-start candidate."""
+
+DEFAULT_RECENT_COUNT: int = 1
+"""How many of the most-recently-created buckets always surface.
+
+A dedicated lane that sidesteps score-based competition. Set to 0 to
+disable. Increasing the value helps shared pools (``user`` scope or
+``unify_groups_into_user``) where new memories would otherwise be
+drowned out by older heavy-weight memories.
+"""
 
 DEFAULT_TOKEN_BUDGET: int = 800
 DEFAULT_MAX_RESULTS: int = 5
@@ -105,12 +121,17 @@ class SurfaceStrategy:
         *,
         token_budget: int = DEFAULT_TOKEN_BUDGET,
         max_results: int = DEFAULT_MAX_RESULTS,
+        recent_count: int = DEFAULT_RECENT_COUNT,
     ) -> list[MemoryBucket]:
         """Return the buckets that should be brought to mind right now.
 
         The result is ordered by priority — caller can render them in
         order. Token budget is enforced *after* sorting so the highest-
         priority items always make it in.
+
+        ``recent_count`` reserves N slots for the most recently created
+        non-pinned buckets so brand-new memories don't get crowded out
+        by older heavy hitters. Set to 0 to disable (legacy behaviour).
         """
         all_buckets = await self.manager.list_by_session(
             session_id, include_archived=False
@@ -122,6 +143,7 @@ class SurfaceStrategy:
         cfg = self.decay_config
 
         pinned: list[MemoryBucket] = []
+        eligible: list[MemoryBucket] = []  # not pinned, not feel/archived
         cold_start: list[MemoryBucket] = []
         candidates: list[tuple[float, MemoryBucket]] = []
 
@@ -134,6 +156,8 @@ class SurfaceStrategy:
                 continue
             if b.bucket_type == "archived":
                 continue
+
+            eligible.append(b)
 
             # Cold-start detection: high-importance bucket created very
             # recently and not yet recalled. activation_count == 0 is
@@ -158,6 +182,17 @@ class SurfaceStrategy:
             )
             candidates.append((score, b))
 
+        # Recent lane: newest non-pinned buckets, capped at recent_count.
+        # This sidesteps score-based competition so a freshly stored
+        # memory always gets a moment in the spotlight even when the
+        # session pool has hundreds of older heavy-weight memories
+        # (most common after enabling ``unify_groups_into_user`` or
+        # ``scope_mode = user`` with lots of accumulated history).
+        recent: list[MemoryBucket] = []
+        rc = max(0, int(recent_count))
+        if rc > 0 and eligible:
+            recent = sorted(eligible, key=lambda b: -float(b.created_at))[:rc]
+
         # Cold-start: prefer the most important ones first; cap at 2.
         cold_start.sort(key=lambda b: (-b.importance, -b.created_at))
         cold_start = cold_start[:COLD_START_MAX]
@@ -166,10 +201,11 @@ class SurfaceStrategy:
         candidates.sort(key=lambda t: t[0], reverse=True)
 
         # Compose final ordering:
-        #   pinned (all) → cold_start (≤2) → candidates → truncate
+        #   pinned (all) → recent (≤recent_count) → cold_start (≤2)
+        #   → candidates → truncate
         ordered: list[MemoryBucket] = []
         seen: set[str] = set()
-        for source in (pinned, cold_start, [b for _, b in candidates]):
+        for source in (pinned, recent, cold_start, [b for _, b in candidates]):
             for bucket in source:
                 if bucket.id in seen:
                     continue
