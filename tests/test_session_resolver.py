@@ -273,11 +273,11 @@ async def test_hybrid_private_chat_uses_user_semantics():
     sid = await resolver.resolve(
         FakeEvent(
             unified_msg_origin="aiocqhttp:FriendMessage:111",
-            sender_id="kk",
+            sender_id="alice",
             _is_private=True,
         )
     )
-    assert sid == "user:kk"
+    assert sid == "user:alice"
 
 
 @ASYNCIO
@@ -291,7 +291,7 @@ async def test_hybrid_group_chat_uses_origin_semantics():
     sid = await resolver.resolve(
         FakeEvent(
             unified_msg_origin="aiocqhttp:GroupMessage:777",
-            sender_id="kk",
+            sender_id="alice",
             _is_private=False,
         )
     )
@@ -306,10 +306,10 @@ async def test_hybrid_group_shared_across_speakers():
     plugin = FakePlugin(scope_mode="hybrid", context=FakeContext(None))
     resolver = SessionResolver(plugin)
 
-    sid_kk = await resolver.resolve(
+    sid_alice = await resolver.resolve(
         FakeEvent(
             unified_msg_origin="aiocqhttp:GroupMessage:777",
-            sender_id="kk",
+            sender_id="alice",
             _is_private=False,
         )
     )
@@ -320,7 +320,7 @@ async def test_hybrid_group_shared_across_speakers():
             _is_private=False,
         )
     )
-    assert sid_kk == sid_other == "aiocqhttp:GroupMessage:777"
+    assert sid_alice == sid_other == "aiocqhttp:GroupMessage:777"
 
 
 @ASYNCIO
@@ -334,18 +334,18 @@ async def test_hybrid_private_shared_across_windows():
     sid_1 = await resolver.resolve(
         FakeEvent(
             unified_msg_origin="aiocqhttp:FriendMessage:111",
-            sender_id="kk",
+            sender_id="alice",
             _is_private=True,
         )
     )
     sid_2 = await resolver.resolve(
         FakeEvent(
             unified_msg_origin="aiocqhttp:FriendMessage:111",
-            sender_id="kk",
+            sender_id="alice",
             _is_private=True,
         )
     )
-    assert sid_1 == sid_2 == "user:kk"
+    assert sid_1 == sid_2 == "user:alice"
 
 
 @ASYNCIO
@@ -404,7 +404,7 @@ async def test_unify_redirects_group_event_to_owner_user_pool():
     plugin = FakePlugin(
         scope_mode="hybrid",
         context=FakeContext(None),
-        unify_groups_into_user="2652497429",
+        unify_groups_into_user="1234567890",
     )
     resolver = SessionResolver(plugin)
 
@@ -415,7 +415,7 @@ async def test_unify_redirects_group_event_to_owner_user_pool():
             _is_private=False,
         )
     )
-    assert sid == "user:2652497429"
+    assert sid == "user:1234567890"
 
 
 @ASYNCIO
@@ -426,21 +426,21 @@ async def test_unify_does_not_affect_private_events():
     plugin = FakePlugin(
         scope_mode="hybrid",
         context=FakeContext(None),
-        unify_groups_into_user="2652497429",
+        unify_groups_into_user="1234567890",
     )
     resolver = SessionResolver(plugin)
 
     sid_owner = await resolver.resolve(
         FakeEvent(
-            unified_msg_origin="aiocqhttp:FriendMessage:2652497429",
-            sender_id="2652497429",
+            unified_msg_origin="aiocqhttp:FriendMessage:1234567890",
+            sender_id="1234567890",
             _is_private=True,
         )
     )
     # Owner's private chat still resolves to their own user pool —
     # which happens to equal the unify target. That's the whole
     # point: private + group converge on the same key.
-    assert sid_owner == "user:2652497429"
+    assert sid_owner == "user:1234567890"
 
     sid_other = await resolver.resolve(
         FakeEvent(
@@ -462,14 +462,14 @@ async def test_unify_works_for_user_mode_too():
     plugin = FakePlugin(
         scope_mode="user",
         context=FakeContext(None),
-        unify_groups_into_user="2652497429",
+        unify_groups_into_user="1234567890",
     )
     resolver = SessionResolver(plugin)
 
-    sid_kk = await resolver.resolve(
+    sid_owner = await resolver.resolve(
         FakeEvent(
             unified_msg_origin="aiocqhttp:GroupMessage:777",
-            sender_id="2652497429",
+            sender_id="1234567890",
             _is_private=False,
         )
     )
@@ -480,7 +480,7 @@ async def test_unify_works_for_user_mode_too():
             _is_private=False,
         )
     )
-    assert sid_kk == sid_friend == "user:2652497429"
+    assert sid_owner == sid_friend == "user:1234567890"
 
 
 @ASYNCIO
@@ -488,7 +488,7 @@ async def test_unify_works_for_origin_mode_too():
     plugin = FakePlugin(
         scope_mode="origin",
         context=FakeContext(None),
-        unify_groups_into_user="2652497429",
+        unify_groups_into_user="1234567890",
     )
     resolver = SessionResolver(plugin)
 
@@ -499,7 +499,7 @@ async def test_unify_works_for_origin_mode_too():
             _is_private=False,
         )
     )
-    assert sid == "user:2652497429"
+    assert sid == "user:1234567890"
 
 
 @ASYNCIO
@@ -510,7 +510,7 @@ async def test_unify_ignored_in_conversation_mode():
     plugin = FakePlugin(
         scope_mode="conversation",
         context=FakeContext(FakeConversationManager({"qq:GroupMessage:777": "cid-G"})),
-        unify_groups_into_user="2652497429",
+        unify_groups_into_user="1234567890",
     )
     resolver = SessionResolver(plugin)
     sid = await resolver.resolve(
