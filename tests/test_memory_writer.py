@@ -496,3 +496,135 @@ async def test_hold_continues_when_embedding_provider_breaks(tmp_path: Path):
         assert await mgr.get("s", result.bucket_id) is not None
     finally:
         await db.close()
+
+
+# ===========================================================================
+# hold_diary — group_context parameter
+# ===========================================================================
+@ASYNCIO
+async def test_hold_diary_group_context_appends_addendum(tmp_path: Path):
+    """When ``group_context=True``, ``hold_diary`` must append the
+    GROUP_DIGEST_ADDENDUM to the system prompt sent to ``tagger.digest``."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured_system_prompts: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured_system_prompts.append(system_prompt or "")
+                # Return a valid digest response
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "测试记忆",
+                    "content": "群里有人说了什么",
+                    "domain": ["测试"],
+                    "valence": 0.5,
+                    "arousal": 0.3,
+                    "tags": ["test"],
+                    "importance": 5,
+                }]))
+
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+        )
+        text = (
+            "对方(小明)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        await writer.hold_diary("s", text, group_context=True)
+
+        assert len(captured_system_prompts) >= 1
+        sys_prompt = captured_system_prompts[0]
+        # Must contain the group addendum keywords
+        assert "GROUP CHAT" in sys_prompt
+        assert "第三人称" in sys_prompt or "third person" in sys_prompt.lower()
+        assert 'Do NOT use' in sys_prompt
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_hold_diary_private_context_no_addendum(tmp_path: Path):
+    """When ``group_context=False`` (default), the system prompt must NOT
+    contain the group addendum — private chat perspective preserved."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured_system_prompts: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured_system_prompts.append(system_prompt or "")
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "测试记忆",
+                    "content": "你告诉我你拿到了offer",
+                    "domain": ["测试"],
+                    "valence": 0.5,
+                    "arousal": 0.3,
+                    "tags": ["test"],
+                    "importance": 5,
+                }]))
+
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+        )
+        text = (
+            "对方(用户)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        await writer.hold_diary("s", text, group_context=False)
+
+        assert len(captured_system_prompts) >= 1
+        sys_prompt = captured_system_prompts[0]
+        # Must NOT contain the group addendum
+        assert "GROUP CHAT" not in sys_prompt
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_hold_diary_group_context_with_custom_prompt(tmp_path: Path):
+    """When user has a custom digest_prompt AND group_context=True, the
+    addendum is appended to the user's custom prompt (not the built-in)."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured_system_prompts: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured_system_prompts.append(system_prompt or "")
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "测试",
+                    "content": "小明拿到offer",
+                    "domain": ["日常"],
+                    "valence": 0.5,
+                    "arousal": 0.3,
+                    "tags": ["test"],
+                    "importance": 5,
+                }]))
+
+        custom_prompt = "My custom digest prompt. Output JSON."
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+            digest_prompt=custom_prompt,
+        )
+        text = (
+            "对方(小明)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        await writer.hold_diary("s", text, group_context=True)
+
+        assert len(captured_system_prompts) >= 1
+        sys_prompt = captured_system_prompts[0]
+        # Contains BOTH the custom prompt AND the addendum
+        assert "My custom digest prompt" in sys_prompt
+        assert "GROUP CHAT" in sys_prompt
+    finally:
+        await db.close()

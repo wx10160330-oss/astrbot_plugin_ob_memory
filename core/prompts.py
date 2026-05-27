@@ -173,3 +173,17 @@ Rules:
 - Example: "你告诉我你拿到了offer，我能感受到你的激动" / "你最近在纠结要不要换工作，我建议你先列出利弊"
 - These are the AI's memories of what happened — what the user shared, what the AI felt or did.
 """
+
+
+GROUP_DIGEST_ADDENDUM: str = """
+
+Additional context — this input is from a GROUP CHAT with multiple speakers.
+Speaker labels appear in the framing as "对方(名字)说:".
+
+Perspective rules for group-chat memories:
+- Refer to each speaker by their NAME in third person (e.g., "小明", "小红").
+  Do NOT use "你" — in a group there are multiple 对方, "你" is ambiguous.
+- The AI itself is still "我".
+- If different speakers discussed different topics, split them into separate entries.
+- Example: "小明告诉我他拿到了offer，很兴奋" / "小红说她最近搬家，还在适应"
+"""

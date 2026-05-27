@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from .embedding_service import EmbeddingService
 from .memory_manager import MemoryManager
 from .models import MemoryBucket, clamp_bucket, new_bucket
+from .prompts import DIGEST_PROMPT, GROUP_DIGEST_ADDENDUM
 from .tagger import Tagger
 
 logger = logging.getLogger("astrbot_plugin_ob_memory.writer")
@@ -460,6 +461,8 @@ class MemoryWriter:
         self,
         session_id: str,
         content: str,
+        *,
+        group_context: bool = False,
     ) -> DigestResult:
         """Split a long passage into entries and hold each as its own memory.
 
@@ -471,6 +474,13 @@ class MemoryWriter:
           (LLM error, embedding error, race-deleted merge target) does
           NOT abort the rest.
         - Returns a :class:`DigestResult` summarising created vs merged.
+
+        ``group_context`` tells the digest LLM that the input comes from
+        a group chat with multiple speakers.  When ``True``, a
+        perspective addendum is appended to the system prompt instructing
+        the model to use third-person names for each speaker rather than
+        ambiguous "你".  Private-chat callers pass ``False`` (default) so
+        the familiar "你/我" perspective is preserved.
 
         Used by the ``record_diary`` LLM tool. With no Tagger or no LLM
         provider this degrades to the single-bucket fast path.
@@ -489,12 +499,18 @@ class MemoryWriter:
                 logger.warning("hold_diary fast path failed: %s", e)
                 return DigestResult(entries=[], failed=1)
 
+        # Build effective digest system prompt.
+        base_prompt = self.digest_prompt.strip() if self.digest_prompt else ""
+        effective_prompt = base_prompt if base_prompt else DIGEST_PROMPT
+        if group_context:
+            effective_prompt = effective_prompt + GROUP_DIGEST_ADDENDUM
+
         # Normal path: split into entries via LLM.
         try:
             entries = await self.tagger.digest(
                 text,
                 session_id=session_id,
-                digest_prompt_override=self.digest_prompt or None,
+                digest_prompt_override=effective_prompt,
             )
         except Exception as e:
             logger.warning(

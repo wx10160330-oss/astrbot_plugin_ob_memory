@@ -733,7 +733,10 @@ class MemoryHooksMixin:
 
         # Spawn the judgement + record flow in the background — must not
         # block the user-facing reply.
-        asyncio.create_task(self._auto_record_task(session_id, user_msg, assistant_msg))
+        is_group = _event_is_group_chat(event)
+        asyncio.create_task(self._auto_record_task(
+            session_id, user_msg, assistant_msg, group_context=is_group,
+        ))
 
     def _inject_memory_persona(self: MemoryPlugin, req: ProviderRequest) -> None:
         """Append the memory-behaviour persona snippet to ``system_prompt``.
@@ -902,8 +905,12 @@ class MemoryHooksMixin:
             session_id, len(pairs), history_source,
         )
 
+        is_group = _event_is_group_chat(event)
+
         try:
-            result = await self.writer.hold_diary(session_id, text)
+            result = await self.writer.hold_diary(
+                session_id, text, group_context=is_group,
+            )
         except Exception as e:
             logger.warning(
                 "[memory] auto-summary hold_diary raised for session=%s: %s",
@@ -927,6 +934,8 @@ class MemoryHooksMixin:
         session_id: str,
         user_msg: str,
         assistant_msg: str,
+        *,
+        group_context: bool = False,
     ) -> None:
         """Background body — judges + records. All errors swallowed."""
         cfg = self._flat_cfg()
@@ -953,7 +962,9 @@ class MemoryHooksMixin:
 
         content = format_digest_pairs([(user_msg, assistant_msg)]).strip()
         try:
-            result = await self.writer.hold_diary(session_id, content)  # type: ignore[union-attr]
+            result = await self.writer.hold_diary(  # type: ignore[union-attr]
+                session_id, content, group_context=group_context,
+            )
         except Exception as e:
             logger.debug("auto-record hold_diary raised: %s", e)
             return
