@@ -1108,9 +1108,15 @@ async def test_group_summary_propagates_speaker_tags_into_digest_text(
 
         assert len(recorded_args) == 1, "auto-summary should have fired"
         _, digest_text = recorded_args[0]
-        # The digest LLM input must surface both speakers so it can
-        # attribute statements correctly.
-        assert "[小明] 我今天拿到 offer 了" in digest_text
-        assert "[小红] 我家狗子刚没了" in digest_text
+        # The digest LLM input must surface both speakers in an
+        # unambiguous way: the speaker tag is lifted from the in-body
+        # ``[小明] ...`` form into the framing prefix
+        # ``对方(小明)说: ...`` so it cannot be misparsed as an
+        # in-message address ("称呼") by the LLM.
+        assert "对方(小明)说: 我今天拿到 offer 了" in digest_text
+        assert "对方(小红)说: 我家狗子刚没了" in digest_text
+        # Sanity: the raw [name] body form must not leak through.
+        assert "[小明]" not in digest_text
+        assert "[小红]" not in digest_text
     finally:
         await db.close()

@@ -158,6 +158,33 @@ def test_format_digest_pairs_marks_user_perspective():
     assert "我(AI)回应: 太好了" in text
 
 
+def test_format_digest_pairs_lifts_speaker_tag_into_framing():
+    # Regression: when ``decorate_user_msg_with_speaker`` has tagged a
+    # turn with ``[name] ``, ``format_digest_pairs`` must move the name
+    # into the ``对方(...)说:`` framing prefix rather than leave it
+    # inside the body. Leaving it in-body risks the LLM mis-reading
+    # ``[小明] 我...`` as an in-message address ("称呼") instead of a
+    # speaker tag — the user explicitly flagged this concern.
+    text = format_digest_pairs([
+        ("[小明] 我今天拿到 offer 了", "恭喜！"),
+        ("[小红] 我家狗子刚没了", "节哀…"),
+    ])
+    assert "对方(小明)说: 我今天拿到 offer 了" in text
+    assert "对方(小红)说: 我家狗子刚没了" in text
+    # The raw ``[name] `` body form must NOT leak through, otherwise
+    # the whole lift-into-framing operation was pointless.
+    assert "[小明]" not in text
+    assert "[小红]" not in text
+
+
+def test_format_digest_pairs_empty_bracket_falls_back_to_default_label():
+    # Defensive: an empty tag like ``[]`` (shouldn't happen — the
+    # decorator declines to produce one — but exercises the parser
+    # guard) must not blow up the framing or produce ``对方()说:``.
+    text = format_digest_pairs([("[]   hello", "ok")])
+    assert "对方(用户)说: []   hello" in text
+
+
 # ===========================================================================
 # Speaker-decoration helper — group-chat "不认人" regression suite.
 #

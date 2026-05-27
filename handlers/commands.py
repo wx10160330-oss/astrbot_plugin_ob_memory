@@ -841,14 +841,34 @@ class MemoryCommandsMixin:
         return [], "; ".join(notes) or "no history sources available"
 
 
+_SPEAKER_PREFIX_RE = re.compile(r"^\[([^\]\n]+)\]\s+(.*)$", re.DOTALL)
+
+
 def format_digest_pairs(pairs: list[tuple[str, str]]) -> str:
     """Format user-assistant pairs for digest input.
+
+    A leading ``[speaker] `` tag in ``user_msg`` (planted by
+    :func:`decorate_user_msg_with_speaker` for group-chat turns) is
+    lifted into the framing prefix so the LLM sees an unambiguous
+    ``对方(speaker)说:`` line instead of an in-body ``[speaker] ...``
+    string that could conceivably be misparsed as an address-form
+    ("称呼"). Private-chat / unannotated turns keep the original
+    ``对方(用户)说:`` prefix bit-for-bit.
 
     Exported for use by llm_hooks.py auto-record flow.
     """
     text_parts: list[str] = []
     for user_msg, assistant_msg in pairs:
-        text_parts.append(f"对方(用户)说: {user_msg}")
+        speaker_label = "用户"
+        body = user_msg
+        if isinstance(user_msg, str):
+            m = _SPEAKER_PREFIX_RE.match(user_msg)
+            if m:
+                candidate = m.group(1).strip()
+                if candidate:
+                    speaker_label = candidate
+                    body = m.group(2)
+        text_parts.append(f"对方({speaker_label})说: {body}")
         text_parts.append(f"我(AI)回应: {assistant_msg}")
     return "\n".join(text_parts)
 
