@@ -33,6 +33,7 @@ from astrbot_plugin_ob_memory.handlers.llm_hooks import (
     MEMORY_BLOCK_FOOTER,
     MEMORY_BLOCK_HEADER,
     MemoryHooksMixin,
+    _get_recent_pairs_buffer,
     _heuristic_should_auto_record,
     _injection_block,
     _trim_to_budget,
@@ -52,6 +53,53 @@ ASYNCIO = pytest.mark.asyncio
 class FakeEvent:
     unified_msg_origin: str = "qq:GroupMessage:12345"
     message_str: str = ""
+
+
+@dataclass
+class FakeGroupEvent:
+    """Group-chat event stub with a known sender name + ``is_private_chat``
+    returning ``False`` so the speaker-enrichment path in
+    ``_maybe_schedule_auto_record`` lights up.
+
+    Models the real AstrBot ``AstrMessageEvent`` surface that the
+    handler relies on (``get_sender_name`` / ``is_private_chat`` /
+    ``message_str``) without dragging the framework in.
+    """
+
+    unified_msg_origin: str = "qq:GroupMessage:12345"
+    message_str: str = ""
+    sender_name: str = "小明"
+    sender_id: str = "1001"
+
+    def get_sender_name(self) -> str:
+        return self.sender_name
+
+    def get_sender_id(self) -> str:
+        return self.sender_id
+
+    def is_private_chat(self) -> bool:
+        return False
+
+
+@dataclass
+class FakePrivateEvent:
+    """Private-chat counterpart used to prove the enrichment path is a
+    no-op for 1-to-1 conversations (no risk of changing the wire
+    format for existing private-chat users)."""
+
+    unified_msg_origin: str = "qq:FriendMessage:7890"
+    message_str: str = ""
+    sender_name: str = "kk"
+    sender_id: str = "7890"
+
+    def get_sender_name(self) -> str:
+        return self.sender_name
+
+    def get_sender_id(self) -> str:
+        return self.sender_id
+
+    def is_private_chat(self) -> bool:
+        return True
 
 
 @dataclass
@@ -899,5 +947,170 @@ async def test_every_n_turns_falls_back_to_rolling_buffer_on_empty_history(
         # Buffer must include content from both turns.
         assert "群里" in text or "看了那个展览" in text
         assert "展览" in text or "听起来很有意思" in text
+    finally:
+        await db.close()
+
+
+# ===========================================================================
+# Group-chat speaker enrichment — "不认人" regression suite.
+#
+# In a multi-speaker group chat the digest LLM previously received
+# every user message tagged uniformly as ``对方(用户)`` (see
+# ``format_digest_pairs``). With no per-message speaker attribution,
+# the LLM cross-attributed facts (e.g. "Alice said X" got merged into
+# "Bob said X"), which surfaced as the user-reported "群聊里 bot 不认人,
+# 乱记" symptom.
+#
+# The fix decorates user messages with ``[sender_name] `` before they
+# hit the rolling buffer (group chats only), so downstream consumers
+# (auto-summary, per-turn auto-record) keep their existing
+# ``(user_msg, assistant_msg)`` shape but each user_msg now carries
+# its speaker. These tests pin that contract end-to-end.
+# ===========================================================================
+@ASYNCIO
+async def test_buffer_decorates_user_msg_with_speaker_in_group_chat(
+    tmp_path: Path,
+):
+    """Rolling buffer must store ``[小明] ...`` for group-chat turns so
+    the digest LLM can distinguish speakers later when it's fed multiple
+    turns at once.
+
+    Without this, two distinct people in a group both end up as
+    ``对方(用户)说: ...`` and the LLM has no way to attribute anything.
+    """
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 99,  # never fire summary in this test
+        }
+        # Empty conversation_manager history so the buffer is the
+        # only place we can observe the enrichment.
+        async def empty_history(event):
+            return ([], "no cid for group adapter")
+
+        obj._get_conversation_history = empty_history  # type: ignore[attr-defined]
+
+        await obj.memory_on_llm_response(
+            FakeGroupEvent(message_str="我今天拿到 offer 了", sender_name="小明"),
+            FakeLLMResponse(completion_text="恭喜！"),
+        )
+        await asyncio.sleep(0.05)
+        await obj.memory_on_llm_response(
+            FakeGroupEvent(message_str="我家狗子刚没了", sender_name="小红"),
+            FakeLLMResponse(completion_text="节哀…"),
+        )
+        await asyncio.sleep(0.05)
+
+        # The buffer is keyed by the resolved memory session_id. For
+        # this test the default scope_mode produces conv:None or umo-
+        # based id, so just look at the only populated bucket.
+        buffers = [
+            buf for buf in getattr(obj, "_recent_pairs", {}).values()
+            if buf
+        ]
+        assert len(buffers) == 1, (
+            "expected exactly one populated buffer for the group session"
+        )
+        pairs = list(buffers[0])
+        # Both user messages must carry their speaker tag.
+        assert pairs[0][0] == "[小明] 我今天拿到 offer 了"
+        assert pairs[1][0] == "[小红] 我家狗子刚没了"
+        # Assistant replies are untouched (only one AI; ``format_digest_pairs``
+        # already labels them as ``我(AI)``).
+        assert pairs[0][1] == "恭喜！"
+        assert pairs[1][1] == "节哀…"
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_buffer_leaves_private_chat_user_msg_alone(tmp_path: Path):
+    """Private chats must keep the wire format bit-for-bit unchanged
+    so existing summaries / configurations don't suddenly start
+    receiving ``[kk] ...`` prefixes that they never asked for.
+
+    Only the group-chat path enriches.
+    """
+    db, obj = await _open(tmp_path)
+    try:
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 99,
+        }
+        async def empty_history(event):
+            return ([], "no cid")
+
+        obj._get_conversation_history = empty_history  # type: ignore[attr-defined]
+
+        await obj.memory_on_llm_response(
+            FakePrivateEvent(message_str="我今天好累"),
+            FakeLLMResponse(completion_text="休息一下吧"),
+        )
+        await asyncio.sleep(0.05)
+
+        buffers = [
+            buf for buf in getattr(obj, "_recent_pairs", {}).values()
+            if buf
+        ]
+        assert len(buffers) == 1
+        pairs = list(buffers[0])
+        # No ``[kk]`` prefix — private chat content must be untouched.
+        assert pairs[0] == ("我今天好累", "休息一下吧")
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_group_summary_propagates_speaker_tags_into_digest_text(
+    tmp_path: Path,
+):
+    """End-to-end: when auto-summary fires in a group chat, the text
+    handed to ``writer.hold_diary`` (which is what the digest LLM sees)
+    must contain the speaker tags, otherwise the whole enrichment
+    pipeline is decorative noise.
+    """
+    db, obj = await _open(tmp_path)
+    try:
+        recorded_args: list[tuple[str, str]] = []
+
+        async def fake_hold_diary(session_id, text):
+            recorded_args.append((session_id, text))
+            return MagicMock(entries=[], created=1, merged=0, failed=0)
+
+        obj.writer = MagicMock()
+        obj.writer.hold_diary = fake_hold_diary
+        obj.config = {
+            "auto_record_enabled": True,
+            "auto_record_mode": "every_n_turns",
+            "auto_record_every_n_turns": 2,
+        }
+        async def empty_history(event):
+            return ([], "no cid for group adapter")
+
+        obj._get_conversation_history = empty_history  # type: ignore[attr-defined]
+
+        await obj.memory_on_llm_response(
+            FakeGroupEvent(message_str="我今天拿到 offer 了", sender_name="小明"),
+            FakeLLMResponse(completion_text="恭喜！"),
+        )
+        await asyncio.sleep(0.05)
+        await obj.memory_on_llm_response(
+            FakeGroupEvent(message_str="我家狗子刚没了", sender_name="小红"),
+            FakeLLMResponse(completion_text="节哀…"),
+        )
+        for _ in range(20):
+            if recorded_args:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(recorded_args) == 1, "auto-summary should have fired"
+        _, digest_text = recorded_args[0]
+        # The digest LLM input must surface both speakers so it can
+        # attribute statements correctly.
+        assert "[小明] 我今天拿到 offer 了" in digest_text
+        assert "[小红] 我家狗子刚没了" in digest_text
     finally:
         await db.close()

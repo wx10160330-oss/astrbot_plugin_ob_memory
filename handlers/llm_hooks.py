@@ -34,7 +34,12 @@ from ..core.decay_engine import calculate_score
 from ..core.prompts import MEMORY_PERSONA_PROMPT
 from ..core.search_service import SearchHit
 from ..core.surface_strategy import estimate_tokens
-from .commands import _extract_pairs, format_digest_pairs
+from .commands import (
+    _event_is_group_chat,
+    _extract_pairs,
+    decorate_user_msg_with_speaker,
+    format_digest_pairs,
+)
 
 if TYPE_CHECKING:
     from ..main import MemoryPlugin
@@ -646,6 +651,23 @@ class MemoryHooksMixin:
                 bool(assistant_msg),
             )
             return
+
+        # Group-chat speaker enrichment: tag the user message with who
+        # said it so a multi-speaker history doesn't get cross-attributed
+        # by the digest LLM. No-op for private chats and for events
+        # missing speaker info, so the wire format is unchanged in those
+        # cases. See ``decorate_user_msg_with_speaker`` for the rationale.
+        speaker_name: str | None = None
+        if _event_is_group_chat(event):
+            try:
+                getter = getattr(event, "get_sender_name", None)
+                raw = getter() if callable(getter) else None
+            except Exception:
+                raw = None
+            if raw is None:
+                raw = getattr(event, "sender_name", None)
+            speaker_name = (str(raw).strip() if raw else None) or None
+        user_msg = decorate_user_msg_with_speaker(user_msg, speaker_name)
 
         # Record this turn into the rolling buffer for fallback summarisation
         # when ``conversation_manager`` can't supply history (e.g. some

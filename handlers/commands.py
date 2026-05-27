@@ -736,6 +736,12 @@ class MemoryCommandsMixin:
         umo = getattr(event, "unified_msg_origin", None) or "<unknown>"
         notes: list[str] = []
 
+        # Decide whether to enrich user-role messages with their
+        # speaker names. Only meaningful in group chats — see
+        # ``decorate_user_msg_with_speaker``. Private chats keep their
+        # wire format bit-for-bit unchanged.
+        is_group_chat = _event_is_group_chat(event)
+
         # Path 1: conversation_manager -> Conversation.history (works for
         # non-WebChat platforms and AstrBot < 4.0).
         conv_mgr = getattr(self.context, "conversation_manager", None)
@@ -819,7 +825,9 @@ class MemoryCommandsMixin:
                             f"msg_history.get({pid},{uid}) empty"
                         )
                         continue
-                    converted = _convert_platform_history(records)
+                    converted = _convert_platform_history(
+                        records, include_speakers=is_group_chat
+                    )
                     if converted:
                         return converted, (
                             f"ok via message_history({pid},{uid}) "
@@ -845,10 +853,74 @@ def format_digest_pairs(pairs: list[tuple[str, str]]) -> str:
     return "\n".join(text_parts)
 
 
+def decorate_user_msg_with_speaker(text: str, speaker: str | None) -> str:
+    """Return ``text`` prefixed with ``[speaker] `` when a speaker is known.
+
+    Group chats have multiple distinct senders sharing the same
+    ``对方(用户)`` slot in the digest input — without a per-message
+    speaker label, the digest LLM can't tell whose statement belongs
+    to whom and ends up cross-attributing facts (the user-reported
+    "不认人" symptom).
+
+    The prefix is the minimum-invasive way to preserve speaker
+    identity: ``format_digest_pairs`` and downstream prompts stay
+    completely unchanged, and any LLM smart enough to summarise can
+    parse ``[name]`` as a speaker tag without further instruction.
+
+    Behaviour rules:
+
+    * Empty / whitespace-only ``speaker`` → return ``text`` unchanged
+      (private chats and turns with no known speaker keep the
+      pre-existing wire format bit-for-bit).
+    * Already-decorated text (starts with ``[speaker] ``) → idempotent,
+      return as-is so re-running enrichment never compounds prefixes.
+    """
+    if not isinstance(text, str):
+        return text
+    if speaker is None:
+        return text
+    name = speaker.strip()
+    if not name:
+        return text
+    stripped = text.lstrip()
+    prefix = f"[{name}] "
+    if stripped.startswith(prefix) or stripped.startswith(f"[{name}]"):
+        return text
+    return f"{prefix}{stripped}"
+
+
 _ASSISTANT_SENDER_HINTS = {"bot", "assistant", "ai", "model", "system_bot"}
 
 
-def _convert_platform_history(records: list[Any]) -> list[dict]:
+def _event_is_group_chat(event: Any) -> bool:
+    """Return ``True`` iff this event is known to be a group/channel
+    message (i.e. ``event.is_private_chat()`` returned ``False``).
+
+    Anything else — private chats, missing ``is_private_chat`` method,
+    raised exceptions — returns ``False`` so callers default to the
+    backwards-compatible "no speaker enrichment" path. The
+    ``unified_msg_origin`` substring fallback mirrors
+    :meth:`SessionResolver._is_private_chat` so the two stay in sync.
+    """
+    checker = getattr(event, "is_private_chat", None)
+    if callable(checker):
+        try:
+            value = checker()
+        except Exception:
+            value = None
+        if isinstance(value, bool):
+            return not value
+    umo = (getattr(event, "unified_msg_origin", None) or "").lower()
+    if "groupmessage" in umo or ":group:" in umo:
+        return True
+    if "friendmessage" in umo or ":friend:" in umo or ":private:" in umo:
+        return False
+    return False
+
+
+def _convert_platform_history(
+    records: list[Any], *, include_speakers: bool = False
+) -> list[dict]:
     """Convert ``PlatformMessageHistory`` rows into OpenAI-format messages.
 
     AstrBot >= 4.0 stores WebChat history in the ``PlatformMessageHistory``
@@ -859,6 +931,12 @@ def _convert_platform_history(records: list[Any]) -> list[dict]:
     Returns a list of ``{"role": ..., "content": ...}`` dicts in
     chronological order (oldest first). Records that have no extractable
     text content are silently skipped.
+
+    ``include_speakers`` (group-chat path only) prepends each
+    user-role message's content with a ``[sender_name] `` tag — see
+    :func:`decorate_user_msg_with_speaker` for the rationale. The flag
+    defaults to ``False`` to keep private-chat behaviour bit-for-bit
+    unchanged.
     """
     out: list[dict] = []
     for rec in records:
@@ -892,7 +970,8 @@ def _convert_platform_history(records: list[Any]) -> list[dict]:
         if not text:
             continue
 
-        sender_name = (getattr(rec, "sender_name", None) or "").lower()
+        sender_name_raw = (getattr(rec, "sender_name", None) or "")
+        sender_name = sender_name_raw.lower()
         sender_id = (getattr(rec, "sender_id", None) or "").lower()
         ctype = ""
         if isinstance(content, dict):
@@ -907,6 +986,14 @@ def _convert_platform_history(records: list[Any]) -> list[dict]:
             or ctype in _ASSISTANT_SENDER_HINTS
         ):
             role = "assistant"
+
+        if (
+            role == "user"
+            and include_speakers
+            and sender_name_raw
+            and sender_name not in _ASSISTANT_SENDER_HINTS
+        ):
+            text = decorate_user_msg_with_speaker(text, sender_name_raw)
 
         out.append({"role": role, "content": text})
     return out
