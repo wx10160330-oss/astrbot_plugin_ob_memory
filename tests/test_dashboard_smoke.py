@@ -377,6 +377,33 @@ def test_dashboard_dormant_filter_includes_user_resolved_buckets():
     assert "else if(isArc||m.resolved)statusLabel='已沉底'" in content
 
 
+def test_dashboard_default_filter_is_active_not_total():
+    """Regression: the dashboard must land on the ``活跃中`` (active) tab
+    when the user opens it, NOT on ``总记忆`` (all).
+
+    Before this fix the initial ``filterStatus`` was ``'all'``, which
+    meant every visit dumped 沉底 (resolved/dormant) and 隐藏 (digested)
+    buckets in with the live ones — the user explicitly complained
+    they had to click 活跃中 every single time. Defaulting to
+    ``'active'`` matches the way the memory system is actually used:
+    you check what's currently alive, and only drill into the archive
+    when you specifically want to.
+
+    The 总记忆 tab still exists and is one click away — this is purely
+    a default-view change, not a removal.
+    """
+    for fname in ("index.html", "ombre_frontend_extracted.html"):
+        html = Path(__file__).resolve().parents[1] / "dashboard" / "static" / fname
+        content = html.read_text(encoding="utf-8")
+        assert "filterStatus='active'" in content, (
+            f"{fname}: default filterStatus must be 'active', not 'all' — "
+            "users explicitly asked to land on the live-memory view."
+        )
+        assert "filterStatus='all'" not in content, (
+            f"{fname}: stale 'all' default still present"
+        )
+
+
 @pytest.mark.asyncio
 async def test_dashboard_health_endpoint(tmp_path: Path):
     """/health returns 200 without auth."""
