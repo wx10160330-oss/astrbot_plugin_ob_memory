@@ -489,10 +489,16 @@ class MemoryHooksMixin:
         existing = (req.system_prompt or "").rstrip()
         req.system_prompt = (existing + "\n\n" + block).strip() if existing else block
 
-        # ----- touch only buckets that actually got injected -----
+        # ----- touch only buckets reached by deliberate retrieval -----
+        # Matches the upstream Ombre Brain semantics ("surfacing should NOT
+        # reset decay timer", server.py at the same author): passive
+        # weight-based surfacing must NOT mutate state, otherwise every
+        # high-weight memory enters a positive-feedback loop where it
+        # keeps surfacing because of its weight and keeps gaining
+        # ``activation_count`` because it keeps surfacing. Only buckets
+        # that matched a search query (``hits``) reflect a deliberate
+        # retrieval and earn the bump.
         try:
-            for bucket in surfaced:
-                await self.manager.touch(session_id, bucket.id)  # type: ignore[union-attr]
             for hit in hits:
                 await self.manager.touch(session_id, hit.bucket.id)  # type: ignore[union-attr]
         except Exception as e:

@@ -412,23 +412,58 @@ async def test_inject_returns_silently_when_uninitialised():
 
 
 @ASYNCIO
-async def test_inject_touches_only_returned_buckets(tmp_path: Path):
+async def test_inject_touches_hits_but_not_surfaced(tmp_path: Path):
+    """Regression: passive weight-based surfacing must NOT call
+    ``touch()`` — only deliberate retrievals (search hits) earn an
+    ``activation_count`` bump.
+
+    Mirrors the upstream Ombre Brain ``server.py`` behaviour (the
+    explicit comment "no touch() here — surfacing should NOT reset
+    decay timer"). Without this property, every high-weight memory
+    enters a positive-feedback loop where it keeps surfacing because
+    of its weight, gains ``activation_count`` every turn because it
+    surfaces, and never lets a lower-weight memory catch up.
+    """
+    from astrbot_plugin_ob_memory.core.search_service import SearchHit
+
     db, obj = await _open(tmp_path)
     try:
-        # Create 3 pinned buckets but cap surface at 1 — only one is touched.
-        for name in ("first", "second", "third"):
-            await obj.manager.create_simple(
-                "qq:GroupMessage:12345", name, name=name, pinned=True
-            )
+        sid = "qq:GroupMessage:12345"
+        # ``floats`` will be returned by SurfaceStrategy (it's pinned, so
+        # it always tops the surface channel). ``searched`` is what we
+        # rig the search to return as a hit.
+        floats = await obj.manager.create_simple(
+            sid, "core principle", name="floats", pinned=True
+        )
+        searched = await obj.manager.create_simple(
+            sid, "specific event", name="searched"
+        )
 
-        obj.config = {"max_search_results": 0, "max_surface_results": 1}
-        req = FakeProviderRequest(prompt="x")
+        async def fake_search(*args, **kwargs):
+            return [SearchHit(bucket=searched, score=5.0, via="keyword")]
+
+        obj.search.search = fake_search  # type: ignore[assignment]
+
+        obj.config = {"max_search_results": 3, "max_surface_results": 2}
+        # The request must have a query so the search path is exercised.
+        req = FakeProviderRequest(prompt="anything")
         await obj.memory_on_llm_request(FakeEvent(), req)
 
-        buckets = await obj.manager.list_by_session("qq:GroupMessage:12345")
-        touched = [b for b in buckets if b.activation_count > 0]
-        # Exactly 1 bucket got touched (the one in the surfaced output).
-        assert len(touched) == 1
+        # Verify both ended up in the injected block (sanity check).
+        prompt = req.system_prompt or ""
+        assert "floats" in prompt
+        assert "searched" in prompt
+
+        # The actual regression assertion.
+        floats_after = await obj.manager.get(sid, floats.id)
+        searched_after = await obj.manager.get(sid, searched.id)
+        assert floats_after is not None and searched_after is not None
+        assert floats_after.activation_count == 0, (
+            "surfaced (passive) bucket must NOT be touched"
+        )
+        assert searched_after.activation_count >= 1, (
+            "search hit (deliberate retrieval) must be touched"
+        )
     finally:
         await db.close()
 
