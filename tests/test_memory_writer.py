@@ -587,6 +587,171 @@ async def test_hold_diary_private_context_no_addendum(tmp_path: Path):
 
 
 @ASYNCIO
+async def test_hold_diary_uses_split_group_prompt(tmp_path: Path):
+    """When ``digest_prompt_group`` is set, group-context summaries
+    use it verbatim (no addendum) — user took full control of the
+    group prompt and is presumed to have baked in their own
+    perspective rules."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured_system_prompts: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured_system_prompts.append(system_prompt or "")
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "测试", "content": "小明拿到 offer",
+                    "domain": ["日常"], "valence": 0.5, "arousal": 0.3,
+                    "tags": ["test"], "importance": 5,
+                }]))
+
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+            digest_prompt_group="GROUP-ONLY prompt with my own rules.",
+            digest_prompt_private="PRIVATE-ONLY prompt.",
+        )
+        text = (
+            "对方(小明)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        await writer.hold_diary("s", text, group_context=True)
+
+        sys_prompt = captured_system_prompts[0]
+        assert "GROUP-ONLY prompt with my own rules." in sys_prompt
+        # Private prompt must NOT leak in
+        assert "PRIVATE-ONLY" not in sys_prompt
+        # User-controlled: no auto-addendum
+        assert "GROUP CHAT" not in sys_prompt
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_hold_diary_uses_split_private_prompt(tmp_path: Path):
+    """When ``digest_prompt_private`` is set, private-context summaries
+    use it verbatim and never touch the group prompt."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured_system_prompts: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured_system_prompts.append(system_prompt or "")
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "测试", "content": "你说了什么",
+                    "domain": ["日常"], "valence": 0.5, "arousal": 0.3,
+                    "tags": ["test"], "importance": 5,
+                }]))
+
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+            digest_prompt_group="GROUP-ONLY prompt.",
+            digest_prompt_private="PRIVATE-ONLY prompt for you/me.",
+        )
+        text = (
+            "对方(用户)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        await writer.hold_diary("s", text, group_context=False)
+
+        sys_prompt = captured_system_prompts[0]
+        assert "PRIVATE-ONLY prompt for you/me." in sys_prompt
+        # Group prompt must NOT leak in
+        assert "GROUP-ONLY" not in sys_prompt
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_hold_diary_group_prompt_overrides_legacy(tmp_path: Path):
+    """Priority test: when BOTH legacy ``digest_prompt`` and
+    ``digest_prompt_group`` are set, the split prompt wins for group
+    context."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured.append(system_prompt or "")
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "x", "content": "y",
+                    "domain": ["日常"], "valence": 0.5, "arousal": 0.3,
+                    "tags": [], "importance": 5,
+                }]))
+
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+            digest_prompt="LEGACY unified prompt",
+            digest_prompt_group="GROUP override prompt",
+        )
+        text = (
+            "对方(小明)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        await writer.hold_diary("s", text, group_context=True)
+
+        sys_prompt = captured[0]
+        assert "GROUP override prompt" in sys_prompt
+        assert "LEGACY" not in sys_prompt
+    finally:
+        await db.close()
+
+
+@ASYNCIO
+async def test_hold_diary_legacy_prompt_used_when_split_empty(tmp_path: Path):
+    """Backwards compat: existing users who only set the legacy
+    ``digest_prompt`` continue to work — it's used as the base for
+    both group and private, with the group addendum auto-appended
+    for group context."""
+    db, mgr = await _open(tmp_path)
+    try:
+        captured: list[str] = []
+
+        class SpyProvider:
+            async def text_chat(self, prompt=None, system_prompt=None, **kwargs):
+                captured.append(system_prompt or "")
+                import json
+                return FakeLLMResponse(json.dumps([{
+                    "name": "x", "content": "y",
+                    "domain": ["日常"], "valence": 0.5, "arousal": 0.3,
+                    "tags": [], "importance": 5,
+                }]))
+
+        writer = MemoryWriter(
+            mgr,
+            tagger=Tagger(context=None, fixed_provider=SpyProvider()),
+            embedding=None,
+            digest_prompt="LEGACY unified prompt",
+        )
+        text = (
+            "对方(小明)说: 我今天拿到了实习的 offer，好开心\n"
+            "我(AI)回应: 太棒了，恭喜你拿到了 offer！"
+        )
+        # Group context: legacy + addendum
+        await writer.hold_diary("s1", text, group_context=True)
+        assert "LEGACY unified prompt" in captured[0]
+        assert "GROUP CHAT" in captured[0]
+
+        # Private context: legacy verbatim, no addendum
+        captured.clear()
+        await writer.hold_diary("s2", text, group_context=False)
+        assert "LEGACY unified prompt" in captured[0]
+        assert "GROUP CHAT" not in captured[0]
+    finally:
+        await db.close()
+
+
+@ASYNCIO
 async def test_hold_diary_group_context_with_custom_prompt(tmp_path: Path):
     """When user has a custom digest_prompt AND group_context=True, the
     addendum is appended to the user's custom prompt (not the built-in)."""

@@ -130,6 +130,12 @@ class MemoryPlugin(
             tagging_enabled = bool(self.config.get("tagging_enabled", True))
             merge_threshold = float(self.config.get("merge_threshold", 0.85))
             digest_prompt = str(self.config.get("digest_prompt", "")).strip()
+            digest_prompt_group = str(
+                self.config.get("digest_prompt_group", "") or ""
+            ).strip()
+            digest_prompt_private = str(
+                self.config.get("digest_prompt_private", "") or ""
+            ).strip()
             self.writer = MemoryWriter(
                 self.manager,
                 tagger=self.tagger,
@@ -138,6 +144,8 @@ class MemoryPlugin(
                 tagging_enabled=tagging_enabled,
                 merge_enabled=tagging_enabled,
                 digest_prompt=digest_prompt,
+                digest_prompt_group=digest_prompt_group,
+                digest_prompt_private=digest_prompt_private,
             )
 
             # ---------- Search + Surface ----------

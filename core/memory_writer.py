@@ -115,6 +115,8 @@ class MemoryWriter:
         tagging_enabled: bool = True,
         merge_enabled: bool = True,
         digest_prompt: str = "",
+        digest_prompt_group: str = "",
+        digest_prompt_private: str = "",
     ):
         self.manager = manager
         self.tagger = tagger
@@ -124,8 +126,18 @@ class MemoryWriter:
         # whenever config is reloaded; tests can poke them directly.
         self.tagging_enabled = tagging_enabled
         self.merge_enabled = merge_enabled
-        # User-customisable digest prompt (empty = use built-in default)
+        # User-customisable digest prompts.  Three-tier resolution:
+        # - ``digest_prompt_group`` / ``digest_prompt_private`` are
+        #   context-specific overrides set by the user.  When present
+        #   they win and are used verbatim (no addendum).
+        # - ``digest_prompt`` is the legacy single-prompt field, kept
+        #   for backwards compat.  When set without a context-specific
+        #   override, it is used as the base for both group and private,
+        #   with the group addendum auto-appended for group context.
+        # - All empty: built-in DIGEST_PROMPT (+ addendum for group).
         self.digest_prompt = digest_prompt
+        self.digest_prompt_group = digest_prompt_group
+        self.digest_prompt_private = digest_prompt_private
 
     # ------------------------------------------------------------------
     # hold (event memory)
@@ -499,11 +511,42 @@ class MemoryWriter:
                 logger.warning("hold_diary fast path failed: %s", e)
                 return DigestResult(entries=[], failed=1)
 
-        # Build effective digest system prompt.
-        base_prompt = self.digest_prompt.strip() if self.digest_prompt else ""
-        effective_prompt = base_prompt if base_prompt else DIGEST_PROMPT
+        # Build effective digest system prompt.  Three-tier resolution
+        # by context:
+        #
+        # GROUP CHAT (``group_context=True``):
+        #   1. ``digest_prompt_group`` if set → verbatim (user controls
+        #      both the base prompt AND any perspective rules)
+        #   2. ``digest_prompt`` (legacy) if set → + GROUP_DIGEST_ADDENDUM
+        #   3. default ``DIGEST_PROMPT`` + GROUP_DIGEST_ADDENDUM
+        #
+        # PRIVATE CHAT (``group_context=False``):
+        #   1. ``digest_prompt_private`` if set → verbatim
+        #   2. ``digest_prompt`` (legacy) if set → verbatim
+        #   3. default ``DIGEST_PROMPT``
+        legacy_prompt = self.digest_prompt.strip() if self.digest_prompt else ""
         if group_context:
-            effective_prompt = effective_prompt + GROUP_DIGEST_ADDENDUM
+            group_prompt = (
+                self.digest_prompt_group.strip()
+                if self.digest_prompt_group else ""
+            )
+            if group_prompt:
+                effective_prompt = group_prompt
+            elif legacy_prompt:
+                effective_prompt = legacy_prompt + GROUP_DIGEST_ADDENDUM
+            else:
+                effective_prompt = DIGEST_PROMPT + GROUP_DIGEST_ADDENDUM
+        else:
+            private_prompt = (
+                self.digest_prompt_private.strip()
+                if self.digest_prompt_private else ""
+            )
+            if private_prompt:
+                effective_prompt = private_prompt
+            elif legacy_prompt:
+                effective_prompt = legacy_prompt
+            else:
+                effective_prompt = DIGEST_PROMPT
 
         # Normal path: split into entries via LLM.
         try:

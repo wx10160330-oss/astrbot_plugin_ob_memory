@@ -209,10 +209,17 @@
     "default": true,
     "condition": { "advanced_mode": true }
   },
-  "digest_prompt": {
-    "description": "日记/总结/导入 提示词",
+  "digest_prompt_group": {
+    "description": "群聊 总结提示词",
     "type": "text",
-    "hint": "控制 record_diary / summarize / import_astrbot 时 LLM 如何拆分和改写对话为记忆条目。留空使用内置默认提示词。修改后立即生效，无需重启。",
+    "hint": "仅在群聊（GroupMessage）场景下使用。建议要求 LLM 用第三人称名字指代每个发言人（如「小明告诉我...」），不要用「你」。留空则使用内置默认 + 自动追加群聊视角说明。修改后立即生效，无需重启。",
+    "default": "",
+    "condition": { "advanced_mode": true }
+  },
+  "digest_prompt_private": {
+    "description": "私聊 总结提示词",
+    "type": "text",
+    "hint": "仅在私聊（FriendMessage）场景下使用。建议保留「你/我」的第二人称视角，AI 更亲近。留空则使用内置默认。修改后立即生效，无需重启。",
     "default": "",
     "condition": { "advanced_mode": true }
   }
