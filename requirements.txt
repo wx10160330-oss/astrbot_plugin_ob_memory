@@ -1,0 +1,11 @@
+# AstrBot Memory Plugin dependencies
+# Install: pip install -r requirements.txt
+#
+# Note: aiosqlite is already included in AstrBot's core dependencies.
+# The following are additional packages required by this plugin:
+
+rapidfuzz>=3.0.0
+
+# Dashboard (usually already available via AstrBot's transitive deps)
+starlette>=0.27.0
+uvicorn>=0.20.0

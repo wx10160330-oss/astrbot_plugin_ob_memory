@@ -1,0 +1,277 @@
+{
+  "webui": {
+    "description": "小回的记忆",
+    "type": "object",
+    "hint": "网页服务配置。可以通过浏览器访问面板。",
+    "items": {
+      "enabled": {
+        "description": "启用 WebUI",
+        "type": "bool",
+        "hint": "是否启动网页服务",
+        "default": true
+      },
+      "host": {
+        "description": "监听地址",
+        "type": "string",
+        "hint": "127.0.0.1 = 仅本机访问；0.0.0.0 = 局域网内其他设备也能访问",
+        "options": [
+          "127.0.0.1",
+          "0.0.0.0"
+        ],
+        "default": "127.0.0.1"
+      },
+      "port": {
+        "description": "端口",
+        "type": "int",
+        "hint": "端口号",
+        "default": 2140
+      }
+    }
+  },
+  "embedding_provider_id": {
+    "description": "Embedding 模型 ID",
+    "type": "string",
+    "hint": "用于向量检索的 Embedding 模型 ID。留空使用 AstrBot 默认 embedding provider；没有配置任何 embedding provider 时只用关键词检索。可在 AstrBot 后台「LLM 配置」中查看已有的 Embedding Provider ID。",
+    "_special": "select_embedding_provider",
+    "default": ""
+  },
+  "analyze_provider_id": {
+    "description": "分析模型 ID",
+    "type": "string",
+    "hint": "用于记忆分析、打标、合并的 LLM 模型 ID。留空使用当前会话的默认对话模型。推荐使用推理能力较强的模型。",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "summarize_default_rounds": {
+    "description": "手动总结默认轮次",
+    "type": "int",
+    "hint": "/memory summarize 不带参数时默认总结最近几轮对话。0 表示总结当前对话的全部上下文。",
+    "default": 0
+  },
+  "scope_mode": {
+    "description": "记忆隔离粒度",
+    "type": "string",
+    "hint": "conversation = 每个对话窗口独立（如果想隔离记忆玩剧情可以用这个，每次new了对话之后记忆会被隔离，就不会记得这个事了）；user = 同一用户跨窗口/平台共享一份记忆（注意：群聊里会按每个说话人切碎）；origin = 同一群/私聊全员共享；hybrid = 私聊用 user 语义（同一用户跨窗口共享）+ 群聊用 origin 语义（一个群一份），【推荐使用此模式】，群聊和私聊记忆可以互通，并且私聊所有的记忆都是在一个对话里不会被分开。切换粒度不会迁移已有数据。",
+    "options": [
+      "conversation",
+      "user",
+      "origin",
+      "hybrid"
+    ],
+    "default": "conversation"
+  },
+  "unify_groups_into_user": {
+    "description": "群聊记忆并入某用户的私聊池（互通开关）",
+    "type": "string",
+    "hint": "填一个用户 ID（一般是你自己的 QQ 号）：所有群聊事件（群里你说的话 / 群友说的话 / AI 在群里的回复）都重定向到 user:{这个ID} 池，跟该用户的私聊记忆完全互通——AI 在群里能想起私聊聊过的事，反过来也行。留空 = 关闭，群聊和私聊各自独立。仅在 hybrid / user / origin 模式下生效（conversation 模式忽略此项）。",
+    "default": ""
+  },
+  "tagging_enabled": {
+    "description": "自动打标 / 智能合并",
+    "type": "bool",
+    "hint": "开启后每次写入会调一次 LLM 提取主题/情感坐标/关键词，并对相似桶做智能合并。关闭可省每次写入 1 次 LLM 调用，代价是元数据全用默认值、相似话题会重复建桶。",
+    "default": true
+  },
+  "inject_memory_persona": {
+    "description": "自动注入「记忆行为」人设段",
+    "type": "bool",
+    "hint": "开启时插件每次跟模型对话前会自动在 system prompt 末尾拼一段「你拥有这套长期记忆 + 怎么用记忆工具」的指引，让模型像真人一样自然地用记忆功能，不用你再粘到自己的人设里、节省人设字数。关闭则需要你自己在人设里写。",
+    "default": true
+  },
+  "memory_persona_text": {
+    "description": "「记忆行为」提示词内容",
+    "type": "text",
+    "hint": "上面那段「记忆行为」指引的实际内容。留空 = 用插件内置默认值（YAML 格式，介绍长期记忆 + 怎么记 / 怎么用）。想改语气、加例外、换风格直接在这里编辑，保存后下一次对话立即生效。修改时建议保留整体 YAML 结构，模型读起来最准。",
+    "default": ""
+  },
+  "auto_record_enabled": {
+    "description": "自动记录兜底",
+    "type": "bool",
+    "hint": "开启时插件会在模型没主动调 record_memory 的情况下兜底记忆。关闭则完全信任模型自主决定。",
+    "default": true
+  },
+  "auto_record_mode": {
+    "description": "兜底模式",
+    "type": "string",
+    "hint": "every_n_turns（推荐）：每攒够 N 轮对话整体总结一次，节省 LLM 调用且不污染记忆库。per_turn：旧行为，每轮都判断要不要单独记下这一轮。disabled：兜底完全关闭，只信模型自己 record_memory。",
+    "options": [
+      "every_n_turns",
+      "per_turn",
+      "disabled"
+    ],
+    "default": "every_n_turns"
+  },
+  "auto_record_every_n_turns": {
+    "description": "每 N 轮自动总结",
+    "type": "int",
+    "hint": "仅在「兜底模式」选 every_n_turns 时生效。每攒够 N 轮 user/assistant 对话，自动用 /memory summarize 那套流程把这 N 轮提炼成长期记忆。推荐 15-30。模型自己主动 record_memory 时计数器会清零，避免重复。",
+    "default": 20
+  },
+  "auto_record_use_judge": {
+    "description": "自动记录走 LLM 复核",
+    "type": "bool",
+    "hint": "仅在「兜底模式」选 per_turn 时生效。开启时每轮自动记录前再调一次 LLM 判断「这值得记吗」。关闭可省 1 次 LLM 调用，代价是误记率会略升。",
+    "default": true
+  },
+  "advanced_mode": {
+    "description": "⚙️ 启用高级配置",
+    "type": "bool",
+    "hint": "开启后显示衰减引擎、检索权重、token 预算等高级参数。一般用户无需开启。",
+    "default": false
+  },
+  "decay_lambda": {
+    "description": "衰减速率 λ",
+    "type": "float",
+    "hint": "指数衰减速率（每天）。值越大遗忘越快，推荐 0.03 ~ 0.1",
+    "default": 0.05,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "decay_archive_threshold": {
+    "description": "归档阈值",
+    "type": "float",
+    "hint": "Activation_Score 低于此值的桶在下次衰减扫描时归档",
+    "default": 0.3,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "decay_check_interval_hours": {
+    "description": "衰减扫描间隔（小时）",
+    "type": "int",
+    "hint": "后台衰减引擎每隔多少小时扫描一次。0 = 禁用后台扫描",
+    "default": 24,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "decay_emotion_base": {
+    "description": "情感权重基值",
+    "type": "float",
+    "hint": "无 arousal 加成时的基础情感权重",
+    "default": 1.0,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "decay_arousal_boost": {
+    "description": "唤醒度加成系数",
+    "type": "float",
+    "hint": "arousal 每 +1，emotion_weight 增加多少",
+    "default": 0.8,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "max_search_results": {
+    "description": "搜索注入条数",
+    "type": "int",
+    "hint": "每次 on_llm_request 注入的搜索结果最多几条",
+    "default": 3,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "max_surface_results": {
+    "description": "主动浮现条数",
+    "type": "int",
+    "hint": "每次 on_llm_request 主动浮现的未解决记忆最多几条",
+    "default": 2,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "surface_recent_count": {
+    "description": "最近记忆保底条数",
+    "type": "int",
+    "hint": "主动浮现里给「最新创建」的记忆保留几个固定槽位（不参与权重竞争）。开启「群聊互通」或 scope_mode=user 让多个窗口共用同一池子时，新加的记忆容易被老的高权重记忆挤掉——设 1~2 能让刚发生的事至少有一条总在脑子里。设 0 关闭此通道（旧版行为）。",
+    "default": 1,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "injection_token_budget": {
+    "description": "注入 token 预算",
+    "type": "int",
+    "hint": "注入到 system_prompt 的记忆块最多占多少 token",
+    "default": 1500,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "merge_threshold": {
+    "description": "合并相似度阈值",
+    "type": "float",
+    "hint": "向量相似度高于此值时合并到已有桶（0.7 ~ 0.95）",
+    "default": 0.85,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "auto_record_min_chars": {
+    "description": "自动记录最少字符数",
+    "type": "int",
+    "hint": "用户消息少于此长度则跳过自动记录判断。设高一些可避免闲聊式短消息被记下来。",
+    "default": 60,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "auto_record_skip_patterns": {
+    "description": "自动记录跳过模式",
+    "type": "list",
+    "hint": "正则表达式列表，匹配的消息不会触发自动记录。例如命令、寒暄、简单应答等。留空使用默认规则。",
+    "default": [
+      "^/",
+      "^[!！?？.。哈嗯啊嘿嘻噢哦呃唔～~…]+$",
+      "天气|weather",
+      "^好的?$|^行$|^可以$|^ok$|^OK$|^好嘞$|^嗯嗯$|^是的$|^对$|^对啊$|^是$",
+      "^晚安$|^早安$|^午安$|^早$|^晚啦?$|^bye$|^88$|^拜拜$|^再见$",
+      "^你好$|^哈喽$|^hi$|^hello$|^在吗$|^在不在$",
+      "^谢谢$|^谢啦$|^thx$|^thanks$|^thank you$",
+      "^笑死$|^笑死我了?$|^草$|^哈哈+$|^呵呵+$|^嘿嘿+$|^嘻嘻+$",
+      "^\\.{3,}$|^…+$",
+      "^[\\u4e00-\\u9fff]$"
+    ],
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "disabled_sessions": {
+    "description": "禁用会话列表",
+    "type": "list",
+    "hint": "在此列表中的 session_id 不会触发记忆注入与自动记录",
+    "default": [],
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "random_drift_enabled": {
+    "description": "随机漂流",
+    "type": "bool",
+    "hint": "当注入候选 < 3 条时，40% 概率从低权重旧桶里漂上来 1-3 条作为「忽然想起」。模拟人类记忆的随机联想。关闭可让记忆注入更可预测。",
+    "default": true,
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "digest_prompt_group": {
+    "description": "群聊 总结提示词",
+    "type": "text",
+    "hint": "仅在群聊（GroupMessage）场景下使用。建议要求 LLM 用第三人称名字指代每个发言人（如「小明告诉我...」），不要用「你」。留空则使用内置默认 + 自动追加群聊视角说明。修改后立即生效，无需重启。",
+    "default": "",
+    "condition": {
+      "advanced_mode": true
+    }
+  },
+  "digest_prompt_private": {
+    "description": "私聊 总结提示词",
+    "type": "text",
+    "hint": "仅在私聊（FriendMessage）场景下使用。建议保留「你/我」的第二人称视角，AI 更亲近。留空则使用内置默认。修改后立即生效，无需重启。",
+    "default": "",
+    "condition": {
+      "advanced_mode": true
+    }
+  }
+}
