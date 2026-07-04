@@ -527,75 +527,13 @@ class MemoryCommandsMixin:
     # ------------------------------------------------------------------
     # /memory help
     # ------------------------------------------------------------------
-        # ------------------------------------------------------------------
-    # /memory mode [mode]
-    # ------------------------------------------------------------------
-    async def cmd_memory_mode(  # type: ignore[override]
-        self: MemoryPlugin,
-        event: AstrMessageEvent,
-        mode: str = "",
-    ):
-        """切换记忆隔离粒度 (conversation / user / origin / hybrid)。"""
-        valid_modes = ["conversation", "user", "origin", "hybrid"]
-        mode = mode.strip().lower()
-        
-        if not mode:
-            current = self.config.get("scope_mode", "hybrid")
-            yield event.plain_result(
-                f"当前记忆模式为: {current}\n"
-                f"支持的模式: {', '.join(valid_modes)}\n"
-                f"用法: /memory mode <模式>"
-            )
-            return
-            
-        if mode not in valid_modes:
-            yield event.plain_result(f"不支持的模式: {mode}。支持的模式: {', '.join(valid_modes)}")
-            return
-            
-        # 更新内存中的配置
-        self.config["scope_mode"] = mode
-        
-        # 尝试更新 AstrBot 的配置存储
-        try:
-            import json
-            import os
-            from astrbot.core.utils.io import get_caller_dir
-            
-            # 找到插件目录
-            plugin_dir = get_caller_dir()
-            
-            # AstrBot 框架保存配置的路径通常在 data/config/plugins_config.json
-            # 我们需要通过框架 API 或者直接修改文件来持久化
-            # 这里调用框架的配置保存接口 (如果可用)
-            # 或者简单地提示用户重启生效，但由于 self.config 已经修改，当前运行中已经生效了
-            
-            # 为了持久化，我们需要修改 data/config/plugins_config.json
-            # 注意：这是一种 hack 方法，因为 AstrBot 插件 API 没有直接提供 save_config()
-            astrbot_data_dir = os.path.dirname(os.path.dirname(plugin_dir))
-            config_path = os.path.join(astrbot_data_dir, "config", "plugins_config.json")
-            
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    global_config = json.load(f)
-                
-                # 找到本插件的配置并更新
-                plugin_name = "astrbot_plugin_ob_memory"
-                if plugin_name in global_config:
-                    global_config[plugin_name]["scope_mode"] = mode
-                    with open(config_path, 'w', encoding='utf-8') as f:
-                        json.dump(global_config, f, ensure_ascii=False, indent=4)
-                        
-            yield event.plain_result(f"✅ 记忆模式已切换为: {mode}\n(后台配置已同步更新，立即生效)")
-        except Exception as e:
-            yield event.plain_result(f"✅ 记忆模式已切换为: {mode}\n(当前运行中已生效，但写入配置文件失败: {e}，重启后可能失效)")
-
-async def cmd_memory_help(  # type: ignore[override]
+    async def cmd_memory_help(  # type: ignore[override]
         self: MemoryPlugin,
         event: AstrMessageEvent,
     ):
         """显示子指令列表。"""
         yield event.plain_result(
-            "=== /memory 子指令 ===\n            /memory mode [模式]            切换记忆存储模式\n"
+            "=== /memory 子指令 ===\n"
             "/memory list [N]              列出最近活跃的桶\n"
             "/memory search <关键词>        关键词+向量搜索\n"
             "/memory summarize [N]         总结最近 N 轮对话为记忆\n"
