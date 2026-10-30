@@ -232,6 +232,37 @@
       if (target === 'settings') return window.loadConfig();
       return Promise.resolve();
     };
+    var refreshButton = document.getElementById('ob-refresh-dashboard');
+    var refreshToast = document.createElement('div');
+    refreshToast.className = 'ob-refresh-toast';
+    refreshToast.setAttribute('role', 'status');
+    refreshToast.setAttribute('aria-live', 'polite');
+    refreshToast.innerHTML = '<span class="ob-refresh-toast-dot" aria-hidden="true"></span><span class="ob-refresh-toast-text"></span>';
+    document.body.appendChild(refreshToast);
+    var refreshToastTimer;
+    refreshButton.addEventListener('click', async function () {
+      if (refreshButton.disabled || !canLeaveEdit('编辑内容尚未保存，放弃修改并刷新当前页面？')) return;
+      var activeTab = document.querySelector('.tab.active') || document.querySelector('.tab[data-tab="list"]');
+      closeDetail();
+      refreshButton.disabled = true;
+      refreshButton.setAttribute('aria-busy', 'true');
+      refreshButton.querySelector('span').textContent = '刷新中…';
+      try {
+        await window.activateDashboardTab(activeTab);
+        clearTimeout(refreshToastTimer);
+        refreshToast.querySelector('.ob-refresh-toast-text').textContent = '已刷新';
+        refreshToast.classList.remove('show');
+        void refreshToast.offsetWidth;
+        refreshToast.classList.add('show');
+        refreshToastTimer = setTimeout(function () { refreshToast.classList.remove('show'); }, 1000);
+      } catch (error) {
+        feedback('刷新失败：' + error.message);
+      } finally {
+        refreshButton.disabled = false;
+        refreshButton.removeAttribute('aria-busy');
+        refreshButton.querySelector('span').textContent = '刷新';
+      }
+    });
     window.loadConfig = async function () {
       var el = document.getElementById('ob-plugin-summary');
       try {

@@ -272,7 +272,7 @@
         }
         if (!actions) {
           actions = document.createElement('div'); actions.className = 'ob-row-actions';
-          ['forget','resolve','pin','archive','delete','edit'].forEach(function (action) {
+          ['pin','resolve','forget','archive','delete','edit'].forEach(function (action) {
             var button = document.createElement('button'); button.type = 'button'; button.dataset.action = action;
             actions.appendChild(button);
           });
@@ -283,7 +283,7 @@
           });
           row.appendChild(actions);
         }
-        var labels = {forget:memory.dont_surface ? '允许浮现' : '遗忘',resolve:memory.resolved ? '激活' : '沉底',pin:memory.pinned ? '解钉' : '钉选',archive:'归档',delete:'删除',edit:'编辑'};
+        var labels = {forget:memory.dont_surface ? '取消隐藏' : '隐藏',resolve:memory.resolved ? '激活' : '沉底',pin:memory.pinned ? '解钉' : '钉选',archive:'归档',delete:'删除',edit:'编辑'};
         actions.querySelectorAll('button').forEach(function (button) {
           setText(button, labels[button.dataset.action]); button.disabled = busy.has(id);
           if (button.dataset.action === 'delete') button.title = '永久删除，需再次确认';

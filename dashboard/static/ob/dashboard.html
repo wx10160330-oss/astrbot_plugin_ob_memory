@@ -2657,6 +2657,7 @@ html[data-theme="dark"] .dreamcloud .header button:hover { background: var(--the
   </div>
   <div class="header-actions">
     <button type="button" id="theme-toggle" onclick="toggleDashboardTheme()" aria-label="切换到深色模式" title="切换到深色模式" aria-pressed="false"><span class="theme-toggle-icon" aria-hidden="true">☾</span><span class="theme-toggle-label">深色</span></button>
+    <button type="button" id="ob-refresh-dashboard" title="刷新当前页面" aria-label="刷新当前页面" style="height:32px;padding:0 12px;gap:5px;display:inline-flex;align-items:center;white-space:nowrap;font-size:12px;"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>刷新</span></button>
     <button id="btn-restart" onclick="restartService()" title="重启服务；红点表示有设置等待重启生效" style="height:32px;padding:0 12px;gap:5px;display:inline-flex;align-items:center;white-space:nowrap;font-size:12px;"><span class="restart-dot"></span><i data-lucide="power"></i> 重启</button>
 
     <button onclick="doLogout()" title="退出登录 / Log out" style="height:32px;padding:0 12px;gap:5px;display:inline-flex;align-items:center;white-space:nowrap;font-size:12px;"><i data-lucide="log-out"></i> 退出 Exit</button>
@@ -2712,7 +2713,7 @@ html[data-theme="dark"] .dreamcloud .header button:hover { background: var(--the
     <span id="bucket-selected-count" style="color:var(--text-dim);font-size:12px;">已选 0</span>
     <div class="bucket-bulkbar-actions">
       <button type="button" class="memory-delete-trigger" onclick="openPermanentDelete(Array.from(selectedBucketIds))" style="height:32px;padding:0 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px;"><i data-lucide="trash-2"></i> 永久删除</button>
-      <button onclick="runBucketBatch('forget')" style="height:32px;padding:0 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px;"><i data-lucide="eye-off"></i> 主动遗忘</button>
+      <button onclick="runBucketBatch('forget')" style="height:32px;padding:0 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px;"><i data-lucide="eye-off"></i> 隐藏</button>
       <button onclick="runBucketBatch('resolve')" style="height:32px;padding:0 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px;"><i data-lucide="moon"></i> 沉底</button>
       <button onclick="runBucketBatch('archive')" style="height:32px;padding:0 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px;"><i data-lucide="archive"></i> 归档</button>
       <button class="developer-only" onclick="hardDeleteSelectedTests()" style="height:32px;padding:0 12px;font-size:12px;align-items:center;gap:5px;color:#b85c3c;"><i data-lucide="trash-2"></i> 永久删除测试桶</button>
@@ -2721,12 +2722,12 @@ html[data-theme="dark"] .dreamcloud .header button:hover { background: var(--the
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中… / Loading…</div>
   </div>
-  <!-- iter 1.9 C: 已主动遗忘的桶折叠区 / collapsible voluntary-forgotten group -->
+  <!-- iter 1.9 C: 已隐藏的桶折叠区 / collapsible voluntary-forgotten group -->
   <details id="forgotten-group" style="margin-top:18px;display:none;">
     <summary style="cursor:pointer;font-size:13px;color:var(--text-dim);padding:6px 0;">
       <i data-lucide="eye-off" style="width:14px;height:14px;vertical-align:-2px;"></i>
-      已主动遗忘 <span id="forgotten-count">0</span> 条 <span class="en">Forgotten</span>
-      <button onclick="event.preventDefault(); bucketsForgetAllow();" title="全部允许浮现 / Allow all to surface" style="margin-left:12px;font-size:11px;padding:3px 8px;"><i data-lucide="eye"></i></button>
+      已隐藏 <span id="forgotten-count">0</span> 条 <span class="en">Hidden</span>
+      <button onclick="event.preventDefault(); bucketsForgetAllow();" title="全部取消隐藏 / Unhide all" style="margin-left:12px;font-size:11px;padding:3px 8px;"><i data-lucide="eye"></i></button>
     </summary>
     <div id="forgotten-list" style="margin-top:10px;"></div>
   </details>
@@ -5656,11 +5657,7 @@ const BASE = location.origin;
 let allBuckets = [];
 let currentFilter = 'active';
 var BUCKET_SORT_MODES = ['score', 'created_desc', 'created_asc'];
-var bucketSort = 'score';
-try {
-  var storedBucketSort = localStorage.getItem('ombreBucketSort');
-  if (BUCKET_SORT_MODES.includes(storedBucketSort)) bucketSort = storedBucketSort;
-} catch (_) { /* localStorage unavailable: keep the compatible score default */ }
+var bucketSort = 'created_desc';
 var bucketLoadGeneration = 0;
 var selectedBucketIds = new Set();
 var developerMode = localStorage.getItem('ombreDeveloperMode') === 'true';
@@ -5678,9 +5675,8 @@ function syncBucketSortControl() {
 }
 
 async function setBucketSort(value) {
-  var normalized = BUCKET_SORT_MODES.includes(value) ? value : 'score';
+  var normalized = BUCKET_SORT_MODES.includes(value) ? value : 'created_desc';
   bucketSort = normalized;
-  try { localStorage.setItem('ombreBucketSort', bucketSort); } catch (_) {}
   bucketPage = 1;
   syncBucketSortControl();
   await loadBuckets();
@@ -5749,7 +5745,7 @@ function isKnownErasableTestBucket(id) {
 async function runBucketBatch(action) {
   var ids = Array.from(selectedBucketIds);
   if (!ids.length) return alert('请先选择记忆桶。');
-  var labels = {forget:'主动遗忘', resolve:'沉底', archive:'归档'};
+  var labels = {forget:'隐藏', resolve:'沉底', archive:'归档'};
   if (!confirm('确认对 ' + ids.length + ' 条记忆执行“' + labels[action] + '”？')) return;
   var reason = '';
   var allKnownTests = ids.every(isKnownErasableTestBucket);
@@ -5986,7 +5982,7 @@ function updateStats() {
   const resolved = allBuckets.filter(b => b.resolved).length;
   const digested = allBuckets.filter(b => b.digested).length;
   document.getElementById('stats').textContent =
-    total + ' 条记忆 · ' + pinned + ' 钉选 · ' + feels + ' feel · ' + resolved + ' 已解决 · ' + digested + ' 已消化';
+    total + ' 条记忆 · ' + pinned + ' 钉选 · ' + feels + ' feel · ' + resolved + ' 已解决 · ' + digested + ' 隐藏';
   updateChick(total);   // 小黄鸡蛋随记忆总数孵化长大
 }
 
@@ -6000,7 +5996,8 @@ function buildFilters() {
     { key: 'pinned', label: '<i data-lucide="pin"></i> 钉选' },
     { key: 'feel', label: '<i data-lucide="droplet"></i> Feel' },
     { key: 'unresolved', label: '<i data-lucide="zap"></i> 未解决' },
-    { key: 'digested', label: '<i data-lucide="leaf"></i> 已消化' },
+    { key: 'resolved', label: '<i data-lucide="moon"></i> 已沉底' },
+    { key: 'digested', label: '<i data-lucide="eye-off"></i> 隐藏' },
     { key: 'archived', label: '<i data-lucide="archive"></i> 归档' },
   ];
   const typeKeys = types.map(function(t) { return t.key; });
@@ -6020,7 +6017,7 @@ function buildFilters() {
   }
   filters.innerHTML = types.map(function(t) {
     var active = t.key === currentFilter;
-    return '<button class="filter-btn ' + (active ? 'active' : '') + '" aria-pressed="' + (active ? 'true' : 'false') + '" data-filter="' + escAttr(t.key) + '">' + t.label + '</button>';
+    return '<button class="filter-btn ' + (active ? 'active' : '') + '" aria-pressed="' + (active ? 'true' : 'false') + '" data-filter="' + escAttr(t.key) + '">' + t.label + '（' + filterBuckets(allBuckets, t.key).length + '）</button>';
   }).join('') + visibleDomains.map(function(d) {
     var key = 'domain:' + d;
     var active = key === currentFilter;
@@ -6042,16 +6039,18 @@ function buildFilters() {
   };
 }
 
-function filterBuckets(buckets) {
-  if (currentFilter === 'all') return buckets;
-  if (currentFilter === 'active') return buckets.filter(function(b) { return !b.resolved && !b.pinned && !b.digested && b.type !== 'feel' && b.type !== 'archived'; });
-  if (currentFilter === 'pinned') return buckets.filter(function(b) { return b.pinned; });
-  if (currentFilter === 'feel') return buckets.filter(function(b) { return b.type === 'feel'; });
-  if (currentFilter === 'unresolved') return buckets.filter(function(b) { return !b.resolved && b.type !== 'permanent' && !b.pinned; });
-  if (currentFilter === 'digested') return buckets.filter(function(b) { return b.digested; });
-  if (currentFilter === 'archived') return buckets.filter(function(b) { return b.type === 'archived' || b.score < 0.3; });
-  if (currentFilter.startsWith('domain:')) {
-    var d = currentFilter.slice(7);
+function filterBuckets(buckets, filterKey) {
+  var selectedFilter = filterKey || currentFilter;
+  if (selectedFilter === 'all') return buckets;
+  if (selectedFilter === 'active') return buckets.filter(function(b) { return !b.resolved && !b.pinned && !b.digested && b.type !== 'feel' && b.type !== 'archived'; });
+  if (selectedFilter === 'pinned') return buckets.filter(function(b) { return b.pinned; });
+  if (selectedFilter === 'feel') return buckets.filter(function(b) { return b.type === 'feel'; });
+  if (selectedFilter === 'unresolved') return buckets.filter(function(b) { return !b.resolved && b.type !== 'permanent' && !b.pinned; });
+  if (selectedFilter === 'resolved') return buckets.filter(function(b) { return b.resolved; });
+  if (selectedFilter === 'digested') return buckets.filter(function(b) { return b.digested; });
+  if (selectedFilter === 'archived') return buckets.filter(function(b) { return b.type === 'archived' || b.score < 0.3; });
+  if (selectedFilter.startsWith('domain:')) {
+    var d = selectedFilter.slice(7);
     return buckets.filter(function(b) { return (b.domain || []).includes(d); });
   }
   return buckets;
@@ -6117,7 +6116,7 @@ function _bucketPagerHtml(total, totalPages) {
 
 function _paintBuckets() {
   var list = document.getElementById('bucket-list');
-  // iter 1.9 C: 把已主动遗忘的桶单独折叠到下方区域，主列表只显示活跃的
+  // iter 1.9 C: 把已隐藏的桶单独折叠到下方区域，主列表只显示活跃的
   // Split forgotten ones into the dedicated <details>; the main list stays clean.
   var forgotten = currentFilter === 'digested' ? [] : _curBuckets.filter(function(b) { return b.dont_surface; });
   var visible = currentFilter === 'digested' ? _curBuckets : _curBuckets.filter(function(b) { return !b.dont_surface; });
@@ -6133,7 +6132,7 @@ function _paintBuckets() {
   bucketPage = _normalizeBucketPage(bucketPage, totalPages, 1);
   var pageItems = _currentBucketPageItems();
   list.innerHTML = pageItems.map(function(b) {
-    // iter 1.8: dont_surface = 主动遗忘（仍在磁盘） / first_of_kind = 首次出现的标签组合
+    // iter 1.8: dont_surface = 隐藏（仍在磁盘） / first_of_kind = 首次出现的标签组合
     // 图标：feel→计算表情、letter→信封、pinned→可发光的钉、其余沿用原逻辑
     var iconCls = 'icon', iconHtml;
     if (b.letter_locked)       iconHtml = '<i data-lucide="lock-keyhole"></i>';
@@ -6165,7 +6164,7 @@ function _paintBuckets() {
     var timeTitle = chronologicalSort
       ? (shownTime ? '首次记录时间：' + formatExactBucketTime(shownTime) : '首次记录时间未知')
       : (shownTime ? '最近活跃时间：' + formatExactBucketTime(shownTime) : '最近活跃时间未知');
-    // 久未浮现（>45 天且非钉选/锚点/已遗忘）→ 稀疏虚线，视觉上「模糊、遥远」
+    // 久未浮现（>45 天且非钉选/锚点/已隐藏）→ 稀疏虚线，视觉上「模糊、遥远」
     var stale = !b.pinned && !b.anchor && !b.dont_surface && daysSince(activityTime) >= 45;
     var rowCls = 'bucket-row' + (stale ? ' faded' : '');
     var inlineStyle = b.dont_surface ? 'opacity:0.45;' : '';
@@ -6461,7 +6460,7 @@ async function showDetail(id) {
         '<div class="field"><label>活跃度分 / Activity score</label>' + (b.score != null ? b.score.toFixed(4) : '—') + '</div>' +
         '<div class="field"><label>激活次数 / Activations</label>' + safeActivationCount + '</div>' +
         '<div class="field"><label>已解决 / Resolved</label>' + (meta.resolved ? _SV.ok : '—') + '</div>' +
-        '<div class="field"><label>已消化 / Digested</label>' + (meta.digested ? _SV.ok : '—') + '</div>' +
+        '<div class="field"><label>隐藏 / Hidden</label>' + (meta.digested ? _SV.ok : '—') + '</div>' +
         '<div class="field"><label>钉选 / Pinned</label>' + (meta.pinned ? _SV.ok : '—') + '</div>' +
         '<div class="field"><label>导入来源 / Imported</label>' + (meta.imported || meta.source_tool === 'import' ? '被导入' : '—') + '</div>' +
         '<div class="field"><label>Anchor</label>' + (meta.anchor ? _SV.anchor+' 坐标系 / anchor' : '—') + '</div>' +
@@ -6476,7 +6475,7 @@ async function showDetail(id) {
         '<button data-bucket-id="' + escAttr(id) + '" onclick="bucketPin(this.dataset.bucketId)" class="icon-btn">' + (meta.pinned ? '<i data-lucide="pin-off"></i> 取消钉选' : '<i data-lucide="pin"></i> 钉选') + '</button>' +
         '<button data-bucket-id="' + escAttr(id) + '" onclick="bucketAnchor(this.dataset.bucketId)" class="icon-btn" title="anchor = 坐标系，不主动浮现，硬上限 24">' + (meta.anchor ? '<i data-lucide="anchor"></i> 释放 anchor' : '<i data-lucide="anchor"></i> 设为 anchor') + '</button>' +
         '<button data-bucket-id="' + escAttr(id) + '" onclick="bucketResolve(this.dataset.bucketId)" class="icon-btn">' + (meta.resolved ? '<i data-lucide="rotate-ccw"></i> 取消已解决' : '<i data-lucide="check"></i> 标记已解决') + '</button>' +
-        '<button data-bucket-id="' + escAttr(id) + '" onclick="bucketForget(this.dataset.bucketId)" class="icon-btn">' + (meta.dont_surface ? '<i data-lucide="eye"></i> 重新允许浮现' : '<i data-lucide="eye-off"></i> 主动遗忘') + '</button>' +
+        '<button data-bucket-id="' + escAttr(id) + '" onclick="bucketForget(this.dataset.bucketId)" class="icon-btn">' + (meta.dont_surface ? '<i data-lucide="eye"></i> 取消隐藏' : '<i data-lucide="eye-off"></i> 隐藏') + '</button>' +
         '<button data-bucket-id="' + escAttr(id) + '" onclick="bucketArchive(this.dataset.bucketId)" class="icon-btn"><i data-lucide="archive"></i> 归档</button>' +
         '<button data-bucket-id="' + escAttr(id) + '" onclick="openPermanentDelete([this.dataset.bucketId])" class="icon-btn memory-delete-trigger"><i data-lucide="trash-2"></i> 永久删除</button>' +
       '</div>' +
@@ -6524,7 +6523,7 @@ async function bucketAnchor(id) {
   }
 }
 
-// iter 1.8: 主动遗忘切换 / voluntary forget toggle
+// iter 1.8: 隐藏切换 / voluntary forget toggle
 //   POST /api/bucket/{id}/forget 反转 dont_surface。桁仍在磁盘上，
 //   只不再在无参 breath() 中被主动推出。搜索仍能找到。
 async function bucketForget(id, options) {
@@ -6534,10 +6533,10 @@ async function bucketForget(id, options) {
     if (window.ObPet) ObPet.react('forget');
     if (!options || !options.inline) await showDetail(id);
     await loadBuckets();
-  } catch (e) { alert('遗忘切换失败 / Forget toggle failed: ' + e.message); }
+  } catch (e) { alert('隐藏切换失败 / Hide toggle failed: ' + e.message); }
 }
 
-// iter 1.9 C: 渲染折叠区 + 批量允许浮现
+// iter 1.9 C: 渲染折叠区 + 批量取消隐藏
 function renderForgottenGroup(forgotten) {
   var box = document.getElementById('forgotten-group');
   var listEl = document.getElementById('forgotten-list');
@@ -6555,7 +6554,7 @@ function renderForgottenGroup(forgotten) {
       '<span class="name" data-bucket-id="' + escAttr(b.id) + '" onclick="showDetail(this.dataset.bucketId)" style="cursor:pointer;">' + esc(b.name) + '</span>' +
       '<span class="domain">' + esc((b.domain || []).join(', ')) + '</span>' +
       '<span class="time">' + esc(formatTimeAgo(b.last_active || b.created)) + '</span>' +
-      '<button data-bucket-id="' + escAttr(b.id) + '" onclick="bucketAllowOne(this.dataset.bucketId)" title="允许浮现" style="font-size:11px;padding:2px 6px;margin-left:auto;display:inline-flex;align-items:center;"><i data-lucide="eye" style="width:12px;height:12px;"></i></button>' +
+      '<button data-bucket-id="' + escAttr(b.id) + '" onclick="bucketAllowOne(this.dataset.bucketId)" title="取消隐藏" style="font-size:11px;padding:2px 6px;margin-left:auto;display:inline-flex;align-items:center;"><i data-lucide="eye" style="width:12px;height:12px;"></i></button>' +
       '</div>';
   }).join('');
   if (window.lucide) lucide.createIcons();
@@ -6576,7 +6575,7 @@ async function bucketAllowOne(id) {
 async function bucketsForgetAllow() {
   var ids = (allBuckets || []).filter(function(b) { return b.dont_surface; }).map(function(b) { return b.id; });
   if (!ids.length) return;
-  if (!confirm('把这 ' + ids.length + ' 条全部恢复为允许浮现？ / Restore surfacing for all ' + ids.length + ' item(s)?')) return;
+  if (!confirm('把这 ' + ids.length + ' 条全部取消隐藏？ / Unhide all ' + ids.length + ' item(s)?')) return;
   try {
     var res = await fetch(BASE + '/api/buckets/forget', {
       method: 'POST',
@@ -10466,9 +10465,9 @@ function renderEditForm(bid, meta, options) {
         <span><input id="edit-resolved" type="checkbox" ${meta.resolved ? 'checked' : ''} /> <small style="color:var(--text-dim);">勾上后仅在关键词命中时重现（适合已闭环的 plan / 事件）</small></span>
         <label>钉选</label>
         <span><input id="edit-pinned" type="checkbox" onchange="syncEditPinConstraints('pinned',this.closest('details'))" ${meta.pinned ? 'checked' : ''} /> <small id="edit-pin-hint" style="color:var(--text-dim);">钉选会同步为 permanent / importance=10</small></span>
-        <label>已消化</label>
+        <label>隐藏</label>
         <span><input id="edit-digested" type="checkbox" ${meta.digested ? 'checked' : ''} /></span>
-        <label>主动遗忘</label>
+        <label>隐藏</label>
         <span><input id="edit-dont-surface" type="checkbox" ${meta.dont_surface ? 'checked' : ''} /> <small style="color:var(--text-dim);">不在 breath 中主动浮现（桁仍保留）</small></span>
         <label style="align-self:start;padding-top:8px;">为什么记得</label>
         <textarea id="edit-why" placeholder="可选：这条为什么值得保留（仅展示，不计分）" style="min-height:50px;font-family:inherit;line-height:1.7;resize:vertical;">${esc(meta.why_remembered || '')}</textarea>

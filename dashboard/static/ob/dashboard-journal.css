@@ -175,9 +175,22 @@ body.dreamcloud.ob-journal::before{
   background-blend-mode:var(--journal-sky-blend,normal);
 }
 .ob-journal .header{
+  position:sticky;top:0;z-index:80;
   background:var(--theme-header)!important;backdrop-filter:none!important;
   border-bottom:1px dashed var(--journal-line)!important;
 }
+.ob-refresh-toast{
+  position:fixed;top:max(20px,env(safe-area-inset-top));left:50%;transform:translateX(-50%) translateY(-60px);z-index:350;
+  display:flex;align-items:center;gap:8px;max-width:min(92vw,560px);padding:8px 20px;pointer-events:none;
+  background:color-mix(in srgb,var(--surface-solid) 85%,transparent);color:var(--accent-ink,var(--text));
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border:1px solid color-mix(in srgb,var(--accent-light) 25%,transparent);border-radius:50px;
+  box-shadow:0 4px 20px var(--shadow-dark-subtle);font-size:13px;line-height:1.5;opacity:0;
+  transition:opacity .5s cubic-bezier(.4,0,.2,1),transform .5s cubic-bezier(.4,0,.2,1);
+}
+.ob-refresh-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.ob-refresh-toast-dot{width:6px;height:6px;border-radius:50%;background:var(--accent-light);flex-shrink:0}
+@media(prefers-reduced-motion:reduce){.ob-refresh-toast{transition:none}}
 .ob-journal .header h1{
   font:italic 400 34px/1 OmbreCover,'Cormorant Garamond','Times New Roman',serif;letter-spacing:-1px;color:var(--text);
 }
